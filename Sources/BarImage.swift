@@ -3,24 +3,39 @@ import Cocoa
 enum Bar {
     /// The original menu bar font, unchanged.
     static let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-    static let padH: CGFloat = 6
-    static let boxHeight: CGFloat = 17
-    static let imageHeight: CGFloat = 19
-    static let radius: CGFloat = 4
+    static let padH: CGFloat = 9
+    static let boxHeight: CGFloat = 20
+    static let imageHeight: CGFloat = 22
+    static let radius: CGFloat = 6
     static let separator = "  "
 
-    /// A dark box behind everything, so the text colours read the same over any
-    /// wallpaper and in either theme. Near-opaque rather than solid, to sit more
-    /// naturally in the menu bar.
-    static let boxFill = NSColor(white: 0.0, alpha: 0.78)
+    /// A tint rather than a slab: it groups the readout without becoming a block
+    /// of colour. Being near-transparent, the menu bar stays the real background,
+    /// so the text colours have to adapt to the appearance.
+    static let boxFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(white: 1, alpha: 0.13)
+            : NSColor(white: 0, alpha: 0.08)
+    }
 }
 
-/// Text colour on the dark box. systemOrange/systemRed are the original values;
-/// neutral is white because the box, not the menu bar, is now the background.
+func adaptiveColor(dark: NSColor, light: NSColor) -> NSColor {
+    NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    }
+}
+
+/// systemOrange manages only 2.2:1 on a light menu bar, so the light variants are
+/// darkened to clear 4.5:1. Dark mode keeps the stock colours.
+let warnText = adaptiveColor(dark: .systemOrange,
+                             light: NSColor(srgbRed: 0.60, green: 0.33, blue: 0.00, alpha: 1))
+let critText = adaptiveColor(dark: .systemRed,
+                             light: NSColor(srgbRed: 0.72, green: 0.10, blue: 0.10, alpha: 1))
+
 func barTextColor(for pct: Double) -> NSColor {
-    if pct >= 90 { return .systemRed }
-    if pct >= 70 { return .systemOrange }
-    return .white
+    if pct >= 90 { return critText }
+    if pct >= 70 { return warnText }
+    return .labelColor
 }
 
 /// Renders the segments as one boxed run of text. Returned as an image because

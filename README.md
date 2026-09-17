@@ -8,20 +8,12 @@ Menu bar shows the **binding** constraint — whichever window is closest to its
 7d 79%
 ```
 
-The whole readout sits on one dark rounded box, so the text colours read the
-same over any wallpaper and in either theme, without changing the colours
-themselves: white under 70%, `systemOrange` at 70%+, `systemRed` at 90%+
-(9.6:1 and 5.9:1 against the box). Each window is coloured by its own number.
-
-A `~` prefix means the number is
-stale (read from cache, see below). Clicking opens a breakdown:
-
-```
-5-hour       ████······  38%   resets 1h 12m
-7-day        ████████··  80%   resets 3d 14h
-Extra usage  ██████████ 100%   $223 of 200
-Updated just now · live
-```
+The readout sits on a subtle rounded tint — white at 13% on dark menu bars,
+black at 8% on light ones — which groups it without becoming a block of colour.
+Because the menu bar itself stays the effective background, the text adapts:
+stock `systemOrange`/`systemRed` in Dark Mode, darkened variants in Light Mode
+where `systemOrange` manages only 2.2:1 against white. Each window is coloured
+by its own number.
 
 ## Data source
 
