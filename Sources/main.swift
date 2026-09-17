@@ -261,8 +261,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .noToken: self.lastError = "Not signed in to Claude Code"
                     case .http(401, _): self.lastError = "Token expired — run any Claude Code session"
                     case .http(429, let retry):
-                        // The endpoint sends Retry-After; honour it rather than guessing.
-                        let wait = (retry ?? 60) + 5
+                        // The endpoint sometimes sends Retry-After: 0 while still
+                        // refusing, so a floor is needed or the backoff does nothing.
+                        let wait = max(retry ?? 60, 60)
                         self.backoffUntil = Date().addingTimeInterval(wait)
                         self.lastError = "Rate limited — retrying in \(Int(wait))s"
                     case .http(let c, _): self.lastError = "API error \(c)"
