@@ -217,9 +217,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setTitle("Claude …", pct: 0, dimmed: true)
         rebuildMenu()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        let t = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        // Nothing here needs to happen on the dot; slack lets the system batch
+        // this wakeup with others instead of waking the CPU on its own.
+        t.tolerance = 30
+        timer = t
     }
 
     static let barFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -252,6 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refresh(manual: Bool = false) {
         if !manual, let until = backoffUntil, until > Date() { return }
+        // fetchLive shells out to `security` and blocks on it, so it must not run
+        // on the main thread. The completion hops back to main itself.
+        DispatchQueue.global(qos: .utility).async {
         fetchLive { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -281,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.render()
             }
+        }
         }
     }
 
