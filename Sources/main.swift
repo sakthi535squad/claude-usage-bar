@@ -179,6 +179,15 @@ func shortLabel(_ key: String) -> String {
     }
 }
 
+/// The menu bar string. Shows the two windows that gate work; `~` marks cached data.
+func titleText(_ u: Usage) -> String {
+    let stale = u.fromCache ? "~" : ""
+    let shown = u.windows.filter { $0.key == "five_hour" || $0.key == "seven_day" }
+    let use = shown.isEmpty ? (u.binding.map { [$0] } ?? []) : shown
+    return use.map { "\(shortLabel($0.key)) \(stale)\(Int($0.utilization.rounded()))%" }
+        .joined(separator: "  ")
+}
+
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -189,6 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Swapping item.menu while the user has it open closes it mid-click, so
     /// refreshes that land during tracking defer their rebuild to menuDidClose.
     var menuIsOpen = false
+    /// Set when the usage endpoint returns 429. Polling past a rate limit only
+    /// deepens it, so scheduled refreshes are skipped until this passes.
+    var backoffUntil: Date?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
@@ -210,7 +222,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
-    func refresh() {
+    func refresh(manual: Bool = false) {
+        if !manual, let until = backoffUntil, until > Date() { return }
         fetchLive { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -218,10 +231,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .success(let u):
                     self.usage = u
                     self.lastError = nil
+                    self.backoffUntil = nil
                 case .failure(let e):
                     switch e {
                     case .noToken: self.lastError = "Not signed in to Claude Code"
                     case .http(401): self.lastError = "Token expired — run any Claude Code session"
+                    case .http(429):
+                        self.backoffUntil = Date().addingTimeInterval(300)
+                        self.lastError = "Rate limited — retrying in 5 min"
                     case .http(let c): self.lastError = "API error \(c)"
                     case .malformed: self.lastError = "Unexpected API response"
                     }
@@ -241,9 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setTitle("Claude ⚠", pct: 0, dimmed: true)
             return
         }
-        let stale = u.fromCache ? "~" : ""
-        setTitle("\(shortLabel(b.key)) \(stale)\(Int(b.utilization.rounded()))%",
-                 pct: b.utilization, dimmed: false)
+        setTitle(titleText(u), pct: b.utilization, dimmed: false)
         rebuildMenu()
     }
 
@@ -316,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mi
     }
 
-    @objc func doRefresh() { refresh() }
+    @objc func doRefresh() { refresh(manual: true) }
 
     @objc func openUsage() {
         NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
@@ -366,9 +381,7 @@ if CommandLine.arguments.contains("--dump") {
     _ = sem.wait(timeout: .now() + 20)
     if let e = err { print("live fetch failed: \(e)") }
     guard let u = result else { print("no usage available"); exit(1) }
-    if let b = u.binding {
-        print("menu bar: \(shortLabel(b.key)) \(u.fromCache ? "~" : "")\(Int(b.utilization.rounded()))%")
-    }
+    print("menu bar: \(titleText(u))")
     for w in u.windows {
         print(String(format: "  %@ %@ %3d%%   resets %@", pad(w.label, 12),
                      bar(w.utilization), Int(w.utilization.rounded()), countdown(to: w.resetsAt)))
