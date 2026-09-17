@@ -1,0 +1,386 @@
+import Cocoa
+import ServiceManagement
+
+// MARK: - Model
+
+struct Window {
+    let key: String
+    let label: String
+    let utilization: Double
+    let resetsAt: Date?
+}
+
+struct ExtraUsage {
+    let used: Double
+    let limit: Double
+    let currency: String
+    let utilization: Double
+    let enabled: Bool
+}
+
+struct Usage {
+    let windows: [Window]
+    let extra: ExtraUsage?
+    let fetchedAt: Date
+    /// True when the numbers came from Claude Code's on-disk cache rather than the API.
+    let fromCache: Bool
+
+    var binding: Window? {
+        windows.max(by: { $0.utilization < $1.utilization })
+    }
+}
+
+// MARK: - Fetching
+
+enum FetchError: Error {
+    case noToken
+    case http(Int)
+    case malformed
+}
+
+/// Windows the API returns that are worth surfacing, in display order.
+/// The API also returns a long tail of null-valued codenamed buckets; those are skipped.
+let knownWindows: [(String, String)] = [
+    ("five_hour", "5-hour"),
+    ("seven_day", "7-day"),
+    ("seven_day_opus", "7-day Opus"),
+    ("seven_day_sonnet", "7-day Sonnet"),
+    ("seven_day_oauth_apps", "7-day apps"),
+]
+
+let isoFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+func parseDate(_ s: Any?) -> Date? {
+    guard let s = s as? String else { return nil }
+    if let d = isoFormatter.date(from: s) { return d }
+    let plain = ISO8601DateFormatter()
+    plain.formatOptions = [.withInternetDateTime]
+    return plain.date(from: s)
+}
+
+func parseUsage(_ root: [String: Any], fetchedAt: Date, fromCache: Bool) -> Usage {
+    var windows: [Window] = []
+    for (key, label) in knownWindows {
+        guard let entry = root[key] as? [String: Any],
+              let util = entry["utilization"] as? Double else { continue }
+        windows.append(Window(key: key, label: label, utilization: util,
+                              resetsAt: parseDate(entry["resets_at"])))
+    }
+
+    var extra: ExtraUsage?
+    if let e = root["extra_usage"] as? [String: Any],
+       let used = e["used_credits"] as? Double,
+       let limit = e["monthly_limit"] as? Double {
+        extra = ExtraUsage(used: used,
+                           limit: limit,
+                           currency: (e["currency"] as? String) ?? "USD",
+                           utilization: (e["utilization"] as? Double) ?? 0,
+                           enabled: (e["is_enabled"] as? Bool) ?? false)
+    }
+
+    return Usage(windows: windows, extra: extra, fetchedAt: fetchedAt, fromCache: fromCache)
+}
+
+func oauthToken() -> String? {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+    p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = Pipe()
+    do { try p.run() } catch { return nil }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard p.terminationStatus == 0,
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let oauth = json["claudeAiOauth"] as? [String: Any],
+          let token = oauth["accessToken"] as? String,
+          !token.isEmpty
+    else { return nil }
+    return token
+}
+
+func fetchLive(completion: @escaping (Result<Usage, FetchError>) -> Void) {
+    guard let token = oauthToken() else { return completion(.failure(.noToken)) }
+    var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
+    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+    req.timeoutInterval = 15
+    URLSession.shared.dataTask(with: req) { data, resp, _ in
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { return completion(.failure(.http(code))) }
+        guard let data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return completion(.failure(.malformed)) }
+        completion(.success(parseUsage(root, fetchedAt: Date(), fromCache: false)))
+    }.resume()
+}
+
+/// Claude Code caches its last utilization fetch in ~/.claude.json. Used when the
+/// API call fails so the bar shows a stale-but-real number instead of nothing.
+func readCache() -> Usage? {
+    let path = NSHomeDirectory() + "/.claude.json"
+    guard let data = FileManager.default.contents(atPath: path),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let cached = root["cachedUsageUtilization"] as? [String: Any],
+          let util = cached["utilization"] as? [String: Any]
+    else { return nil }
+    let ms = (cached["fetchedAtMs"] as? Double) ?? 0
+    return parseUsage(util, fetchedAt: Date(timeIntervalSince1970: ms / 1000), fromCache: true)
+}
+
+// MARK: - Formatting
+
+/// String(format:) does not honour width specifiers on %@, so pad explicitly.
+func pad(_ s: String, _ width: Int) -> String {
+    s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
+}
+
+func bar(_ pct: Double, width: Int = 10) -> String {
+    let filled = max(0, min(width, Int((pct / 100.0 * Double(width)).rounded())))
+    return String(repeating: "█", count: filled) + String(repeating: "·", count: width - filled)
+}
+
+func countdown(to date: Date?) -> String {
+    guard let date else { return "—" }
+    let secs = Int(date.timeIntervalSinceNow)
+    if secs <= 0 { return "now" }
+    let d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60
+    if d > 0 { return "\(d)d \(h)h" }
+    if h > 0 { return "\(h)h \(m)m" }
+    return "\(m)m"
+}
+
+func ago(_ date: Date) -> String {
+    let secs = Int(Date().timeIntervalSince(date))
+    if secs < 60 { return "just now" }
+    if secs < 3600 { return "\(secs / 60)m ago" }
+    return "\(secs / 3600)h ago"
+}
+
+func color(for pct: Double) -> NSColor {
+    if pct >= 90 { return .systemRed }
+    if pct >= 70 { return .systemOrange }
+    return .labelColor
+}
+
+/// Compact menu-bar label for a window: "5h", "7d", "7d·O".
+func shortLabel(_ key: String) -> String {
+    switch key {
+    case "five_hour": return "5h"
+    case "seven_day": return "7d"
+    case "seven_day_opus": return "7d·O"
+    case "seven_day_sonnet": return "7d·S"
+    default: return "7d·a"
+    }
+}
+
+// MARK: - App
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    var timer: Timer?
+    var usage: Usage?
+    var lastError: String?
+    /// Swapping item.menu while the user has it open closes it mid-click, so
+    /// refreshes that land during tracking defer their rebuild to menuDidClose.
+    var menuIsOpen = false
+
+    func applicationDidFinishLaunching(_ note: Notification) {
+        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        setTitle("Claude …", pct: 0, dimmed: true)
+        rebuildMenu()
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func setTitle(_ text: String, pct: Double, dimmed: Bool) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: dimmed ? NSColor.tertiaryLabelColor : color(for: pct),
+        ]
+        item.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+    }
+
+    func refresh() {
+        fetchLive { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let u):
+                    self.usage = u
+                    self.lastError = nil
+                case .failure(let e):
+                    switch e {
+                    case .noToken: self.lastError = "Not signed in to Claude Code"
+                    case .http(401): self.lastError = "Token expired — run any Claude Code session"
+                    case .http(let c): self.lastError = "API error \(c)"
+                    case .malformed: self.lastError = "Unexpected API response"
+                    }
+                    // Only fall back to the cache when we have nothing live at all;
+                    // a previously-good live reading is fresher than the on-disk one.
+                    if self.usage == nil || self.usage?.fromCache == true {
+                        self.usage = readCache()
+                    }
+                }
+                self.render()
+            }
+        }
+    }
+
+    func render() {
+        guard let u = usage, let b = u.binding else {
+            setTitle("Claude ⚠", pct: 0, dimmed: true)
+            return
+        }
+        let stale = u.fromCache ? "~" : ""
+        setTitle("\(shortLabel(b.key)) \(stale)\(Int(b.utilization.rounded()))%",
+                 pct: b.utilization, dimmed: false)
+        rebuildMenu()
+    }
+
+    func rebuildMenu() {
+        guard !menuIsOpen else { return }
+        let menu = buildMenu()
+        menu.delegate = self
+        item.menu = menu
+    }
+
+    func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        if let u = usage {
+            for w in u.windows {
+                let line = String(format: "%@ %@ %3d%%   resets %@",
+                                  pad(w.label, 12), bar(w.utilization),
+                                  Int(w.utilization.rounded()), countdown(to: w.resetsAt))
+                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                mi.attributedTitle = NSAttributedString(string: line, attributes: [
+                    .font: mono, .foregroundColor: color(for: w.utilization),
+                ])
+                menu.addItem(mi)
+            }
+
+            if let e = u.extra, e.enabled {
+                menu.addItem(.separator())
+                let line = String(format: "%@ %@ %3d%%   %@%.0f of %.0f",
+                                  pad("Extra usage", 12), bar(e.utilization),
+                                  Int(e.utilization.rounded()),
+                                  e.currency == "USD" ? "$" : "", e.used, e.limit)
+                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                mi.attributedTitle = NSAttributedString(string: line, attributes: [
+                    .font: mono, .foregroundColor: color(for: e.utilization),
+                ])
+                menu.addItem(mi)
+            }
+
+            menu.addItem(.separator())
+            let src = u.fromCache ? "cached from Claude Code" : "live"
+            menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
+        }
+
+        if let err = lastError {
+            menu.addItem(disabled("⚠ \(err)"))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Refresh Now", action: #selector(doRefresh), keyEquivalent: "r"))
+        menu.addItem(NSMenuItem(title: "Open Usage Page", action: #selector(openUsage), keyEquivalent: "u"))
+        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        for mi in menu.items where mi.action != nil && mi.action != #selector(NSApplication.terminate(_:)) {
+            mi.target = self
+        }
+        return menu
+    }
+
+    func disabled(_ text: String) -> NSMenuItem {
+        let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        mi.isEnabled = false
+        mi.attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        return mi
+    }
+
+    @objc func doRefresh() { refresh() }
+
+    @objc func openUsage() {
+        NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
+    }
+
+    @objc func toggleLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            lastError = "Login item failed: \(error.localizedDescription)"
+        }
+        rebuildMenu()
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+        refresh()
+    }
+}
+
+// `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
+// bar itself is invisible to screencapture, so this is how the data path is checked.
+if CommandLine.arguments.contains("--dump") {
+    let sem = DispatchSemaphore(value: 0)
+    var result: Usage?
+    var err: String?
+    if CommandLine.arguments.contains("--cache-only") {
+        result = readCache()
+        sem.signal()
+    } else {
+    fetchLive { r in
+        switch r {
+        case .success(let u): result = u
+        case .failure(let e): err = "\(e)"; result = readCache()
+        }
+        sem.signal()
+    }
+    }
+    _ = sem.wait(timeout: .now() + 20)
+    if let e = err { print("live fetch failed: \(e)") }
+    guard let u = result else { print("no usage available"); exit(1) }
+    if let b = u.binding {
+        print("menu bar: \(shortLabel(b.key)) \(u.fromCache ? "~" : "")\(Int(b.utilization.rounded()))%")
+    }
+    for w in u.windows {
+        print(String(format: "  %@ %@ %3d%%   resets %@", pad(w.label, 12),
+                     bar(w.utilization), Int(w.utilization.rounded()), countdown(to: w.resetsAt)))
+    }
+    if let e = u.extra, e.enabled {
+        print(String(format: "  %@ %@ %3d%%   %.0f of %.0f %@", pad("Extra usage", 12),
+                     bar(e.utilization), Int(e.utilization.rounded()), e.used, e.limit, e.currency))
+    }
+    print("  updated \(ago(u.fetchedAt)) · \(u.fromCache ? "cached" : "live")")
+    exit(0)
+}
+
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
+app.run()
