@@ -1,98 +1,95 @@
 import Cocoa
 
-/// The menu bar sits on top of the wallpaper, so plain coloured text has no
-/// guaranteed contrast. Each segment is drawn on its own opaque pill instead;
-/// foregrounds are picked for >=4.5:1 against their pill.
-func pillColors(for pct: Double) -> (bg: NSColor, fg: NSColor) {
-    if pct >= 90 {
-        // systemRed only reaches 3.55:1 against white text; this red gives 5.43:1.
-        return (NSColor(srgbRed: 0.80, green: 0.15, blue: 0.12, alpha: 1), .white)
-    }
-    if pct >= 70 {
-        return (.systemOrange, .black)  // 9.55:1
-    }
-    // Healthy: no alarm colour, but still opaque — a translucent pill lets a
-    // midtone wallpaper through and the contrast stops being predictable.
-    let neutral = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(white: 0.30, alpha: 1)   // white text on this: 8.5:1
-            : NSColor(white: 0.82, alpha: 1)   // black text on this: 13.8:1
-    }
-    return (neutral, .labelColor)
-}
-
 enum Bar {
-    static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-    static let padH: CGFloat = 5
-    static let gap: CGFloat = 4
-    static let pillHeight: CGFloat = 15
-    static let imageHeight: CGFloat = 18
+    /// The original menu bar font, unchanged.
+    static let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    static let padH: CGFloat = 6
+    static let boxHeight: CGFloat = 17
+    static let imageHeight: CGFloat = 19
+    static let radius: CGFloat = 4
+    static let separator = "  "
+
+    /// A dark box behind everything, so the text colours read the same over any
+    /// wallpaper and in either theme. Near-opaque rather than solid, to sit more
+    /// naturally in the menu bar.
+    static let boxFill = NSColor(white: 0.0, alpha: 0.78)
 }
 
-/// Renders the segments as a row of pills. Returned as an image because
-/// NSStatusItem titles cannot draw a rounded background.
+/// Text colour on the dark box. systemOrange/systemRed are the original values;
+/// neutral is white because the box, not the menu bar, is now the background.
+func barTextColor(for pct: Double) -> NSColor {
+    if pct >= 90 { return .systemRed }
+    if pct >= 70 { return .systemOrange }
+    return .white
+}
+
+/// Renders the segments as one boxed run of text. Returned as an image because
+/// an NSStatusItem title cannot draw a background behind itself.
 func titleImage(_ segments: [(text: String, pct: Double)],
                 appearance: NSAppearance) -> NSImage {
-    let attrsFor: (NSColor) -> [NSAttributedString.Key: Any] = {
-        [.font: Bar.font, .foregroundColor: $0]
+    let run = NSMutableAttributedString()
+    for (i, seg) in segments.enumerated() {
+        if i > 0 {
+            run.append(NSAttributedString(string: Bar.separator, attributes: [.font: Bar.font]))
+        }
+        run.append(NSAttributedString(string: seg.text, attributes: [
+            .font: Bar.font,
+            .foregroundColor: barTextColor(for: seg.pct),
+        ]))
     }
-    let sizes = segments.map { $0.text.size(withAttributes: attrsFor(.black)) }
-    let width = sizes.reduce(0) { $0 + $1.width + Bar.padH * 2 }
-        + Bar.gap * CGFloat(max(0, segments.count - 1))
 
+    let textSize = run.size()
+    let width = textSize.width + Bar.padH * 2
     let image = NSImage(size: NSSize(width: max(1, width), height: Bar.imageHeight))
+
     image.lockFocus()
     appearance.performAsCurrentDrawingAppearance {
-        var x: CGFloat = 0
-        let y = (Bar.imageHeight - Bar.pillHeight) / 2
-        for (i, seg) in segments.enumerated() {
-            let colors = pillColors(for: seg.pct)
-            let w = sizes[i].width + Bar.padH * 2
-            let rect = NSRect(x: x, y: y, width: w, height: Bar.pillHeight)
-            colors.bg.setFill()
-            NSBezierPath(roundedRect: rect,
-                         xRadius: Bar.pillHeight / 2,
-                         yRadius: Bar.pillHeight / 2).fill()
-
-            let attrs = attrsFor(colors.fg)
-            let textY = y + (Bar.pillHeight - sizes[i].height) / 2
-            seg.text.draw(at: NSPoint(x: x + Bar.padH, y: textY), withAttributes: attrs)
-            x += w + Bar.gap
-        }
+        let boxY = (Bar.imageHeight - Bar.boxHeight) / 2
+        let box = NSRect(x: 0, y: boxY, width: width, height: Bar.boxHeight)
+        Bar.boxFill.setFill()
+        NSBezierPath(roundedRect: box, xRadius: Bar.radius, yRadius: Bar.radius).fill()
+        run.draw(at: NSPoint(x: Bar.padH, y: boxY + (Bar.boxHeight - textSize.height) / 2))
     }
     image.unlockFocus()
-    // Template images are recoloured by the system, which would erase the pills.
+    // Template images get recoloured by the system, which would flatten the box.
     image.isTemplate = false
     return image
 }
 
-/// Writes menu bar previews over several backdrops, to check the pills hold up
-/// against any wallpaper. Status items never appear in screencapture output.
+/// Writes menu bar previews over several backdrops. Status items never appear in
+/// screencapture output, so this is the only way to check how it reads.
 func renderBarPreview(_ segments: [(text: String, pct: Double)], to path: String) {
-    let backdrops: [(String, NSColor, NSAppearance.Name)] = [
-        ("dark", NSColor(white: 0.12, alpha: 1), .darkAqua),
-        ("light", NSColor(white: 0.95, alpha: 1), .aqua),
-        ("midtone", NSColor(srgbRed: 0.45, green: 0.52, blue: 0.40, alpha: 1), .darkAqua),
-        ("bright", NSColor(srgbRed: 0.98, green: 0.85, blue: 0.35, alpha: 1), .aqua),
+    let backdrops: [(NSColor, NSAppearance.Name)] = [
+        (NSColor(white: 0.12, alpha: 1), .darkAqua),
+        (NSColor(white: 0.95, alpha: 1), .aqua),
+        (NSColor(srgbRed: 0.45, green: 0.52, blue: 0.40, alpha: 1), .darkAqua),
+        (NSColor(srgbRed: 0.98, green: 0.85, blue: 0.35, alpha: 1), .aqua),
     ]
     let rowH: CGFloat = 26
-    let sample = titleImage(segments, appearance: NSAppearance(named: .darkAqua)!)
-    let width = sample.size.width + 40
+    let width = titleImage(segments, appearance: NSAppearance(named: .darkAqua)!).size.width + 40
 
-    let out = NSImage(size: NSSize(width: width, height: rowH * CGFloat(backdrops.count)))
-    out.lockFocus()
+    // Drawn at 2x: the menu bar is Retina, and 1x antialiasing makes thin text
+    // look duller than it really is.
+    let totalH = rowH * CGFloat(backdrops.count)
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(width * 2), pixelsHigh: Int(totalH * 2),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { return }
+    rep.size = NSSize(width: width, height: totalH)
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     for (i, b) in backdrops.enumerated() {
         let y = CGFloat(backdrops.count - 1 - i) * rowH
-        b.1.setFill()
+        b.0.setFill()
         NSRect(x: 0, y: y, width: width, height: rowH).fill()
-        let img = titleImage(segments, appearance: NSAppearance(named: b.2)!)
-        img.draw(at: NSPoint(x: 20, y: y + (rowH - Bar.imageHeight) / 2),
-                 from: .zero, operation: .sourceOver, fraction: 1)
+        titleImage(segments, appearance: NSAppearance(named: b.1)!)
+            .draw(at: NSPoint(x: 20, y: y + (rowH - Bar.imageHeight) / 2),
+                  from: .zero, operation: .sourceOver, fraction: 1)
     }
-    out.unlockFocus()
+    NSGraphicsContext.restoreGraphicsState()
 
-    guard let tiff = out.tiffRepresentation,
-          let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
-    else { return }
+    guard let png = rep.representation(using: .png, properties: [:]) else { return }
     try? png.write(to: URL(fileURLWithPath: path))
 }
