@@ -8,12 +8,10 @@ Menu bar shows the **binding** constraint — whichever window is closest to its
 7d 79%
 ```
 
-The readout sits on a subtle rounded tint — white at 13% on dark menu bars,
-black at 8% on light ones — which groups it without becoming a block of colour.
-Because the menu bar itself stays the effective background, the text adapts:
-stock `systemOrange`/`systemRed` in Dark Mode, darkened variants in Light Mode
-where `systemOrange` manages only 2.2:1 against white. Each window is coloured
-by its own number.
+Plain text, no background. Neutral under 70%, `systemOrange` at 70%+,
+`systemRed` at 90%+ — the stock macOS system colours, which follow Light and
+Dark Mode on their own. Each window is coloured by its own number, so a healthy
+5-hour window stays neutral while the 7-day one turns orange.
 
 ## Data source
 
@@ -51,7 +49,6 @@ headless mode that prints exactly what the menu would show:
 ```bash
 ClaudeUsage --dump                 # print what the menu bar shows
 ClaudeUsage --dump --cache-only    # exercise the offline fallback path
-ClaudeUsage --render-bar           # preview the pills over 4 backdrops (no API call)
 ```
 
 (`ClaudeUsage` = `/Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage`.)
