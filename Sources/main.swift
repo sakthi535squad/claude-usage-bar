@@ -196,13 +196,17 @@ func shortLabel(_ key: String) -> String {
     }
 }
 
-/// The menu bar string. Shows the two windows that gate work; `~` marks cached data.
-func titleText(_ u: Usage) -> String {
+/// Menu bar segments, one per window shown. Each carries its own utilisation so it
+/// can be coloured independently — a healthy 5h should not inherit a red 7d.
+func titleSegments(_ u: Usage) -> [(text: String, pct: Double)] {
     let stale = u.fromCache ? "~" : ""
     let shown = u.windows.filter { $0.key == "five_hour" || $0.key == "seven_day" }
     let use = shown.isEmpty ? (u.binding.map { [$0] } ?? []) : shown
-    return use.map { "\(shortLabel($0.key)) \(stale)\(Int($0.utilization.rounded()))%" }
-        .joined(separator: "  ")
+    return use.map { ("\(shortLabel($0.key)) \(stale)\(Int($0.utilization.rounded()))%", $0.utilization) }
+}
+
+func titleText(_ u: Usage) -> String {
+    titleSegments(u).map(\.text).joined(separator: "  ")
 }
 
 // MARK: - App
@@ -231,12 +235,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    static let barFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+
     func setTitle(_ text: String, pct: Double, dimmed: Bool) {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+            .font: Self.barFont,
             .foregroundColor: dimmed ? NSColor.tertiaryLabelColor : color(for: pct),
         ]
         item.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+    }
+
+    func setTitle(segments: [(text: String, pct: Double)]) {
+        let out = NSMutableAttributedString()
+        for (i, seg) in segments.enumerated() {
+            if i > 0 {
+                out.append(NSAttributedString(string: "  ", attributes: [.font: Self.barFont]))
+            }
+            out.append(NSAttributedString(string: seg.text, attributes: [
+                .font: Self.barFont,
+                .foregroundColor: color(for: seg.pct),
+            ]))
+        }
+        item.button?.attributedTitle = out
     }
 
     func refresh(manual: Bool = false) {
@@ -273,11 +293,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func render() {
-        guard let u = usage, let b = u.binding else {
+        guard let u = usage, u.binding != nil else {
             setTitle("Claude ⚠", pct: 0, dimmed: true)
             return
         }
-        setTitle(titleText(u), pct: b.utilization, dimmed: false)
+        setTitle(segments: titleSegments(u))
         rebuildMenu()
     }
 
