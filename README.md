@@ -8,9 +8,11 @@ Menu bar shows the **binding** constraint — whichever window is closest to its
 7d 79%
 ```
 
-Neutral under 70%, `systemOrange` at 70%+, `systemRed` at 90%+ — the standard
-macOS system colours, which adapt to Light and Dark Mode on their own. Each
-window in the menu bar is coloured by its own number. A `~` prefix means the number is
+Each window is drawn as its own pill, coloured by its own number: an opaque
+neutral grey under 70%, orange at 70%+, red at 90%+. The menu bar sits over the
+wallpaper, so coloured text alone has no guaranteed contrast — every foreground
+here clears 4.5:1 against its pill (orange/black 9.6:1, red/white 5.4:1,
+neutral 8.5:1 dark and 13.8:1 light). The pill image is redrawn on theme change. A `~` prefix means the number is
 stale (read from cache, see below). Clicking opens a breakdown:
 
 ```
@@ -56,6 +58,7 @@ headless mode that prints exactly what the menu would show:
 ```bash
 ClaudeUsage --dump                 # print what the menu bar shows
 ClaudeUsage --dump --cache-only    # exercise the offline fallback path
+ClaudeUsage --render-bar           # preview the pills over 4 backdrops (no API call)
 ```
 
 (`ClaudeUsage` = `/Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage`.)

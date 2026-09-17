@@ -220,6 +220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, queue: .main) { [weak self] _ in self?.render() }
     }
 
     static let barFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -229,21 +232,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .font: Self.barFont,
             .foregroundColor: dimmed ? NSColor.tertiaryLabelColor : color(for: pct),
         ]
+        item.button?.image = nil
+        item.button?.imagePosition = .noImage
         item.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
     func setTitle(segments: [(text: String, pct: Double)]) {
-        let out = NSMutableAttributedString()
-        for (i, seg) in segments.enumerated() {
-            if i > 0 {
-                out.append(NSAttributedString(string: "  ", attributes: [.font: Self.barFont]))
-            }
-            out.append(NSAttributedString(string: seg.text, attributes: [
-                .font: Self.barFont,
-                .foregroundColor: color(for: seg.pct),
-            ]))
-        }
-        item.button?.attributedTitle = out
+        guard let button = item.button else { return }
+        let appearance = button.effectiveAppearance
+        button.attributedTitle = NSAttributedString(string: "")
+        button.image = titleImage(segments, appearance: appearance)
+        button.imagePosition = .imageOnly
     }
 
     func refresh(manual: Bool = false) {
@@ -391,6 +390,15 @@ extension AppDelegate: NSMenuDelegate {
 
 // `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
 // bar itself is invisible to screencapture, so this is how the data path is checked.
+if CommandLine.arguments.contains("--render-bar") {
+    guard let u = readCache() else { print("no cached usage"); exit(1) }
+    renderBarPreview(titleSegments(u), to: "/tmp/bar.png")
+    // Live data rarely covers every threshold; this exercises all three states.
+    renderBarPreview([("5h 42%", 42), ("7d 95%", 95)], to: "/tmp/bar-states.png")
+    print("wrote /tmp/bar.png and /tmp/bar-states.png")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--dump") {
     let sem = DispatchSemaphore(value: 0)
     var result: Usage?
