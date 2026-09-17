@@ -8,17 +8,17 @@ Menu bar shows the **binding** constraint — whichever window is closest to its
 7d 79%
 ```
 
-Black under 70%, orange at 70%+, red at 90%+. The warning colours resolve to
-darker variants on a light menu bar, where macOS's `systemOrange` only reaches
-2.2:1 contrast against white. A `~` prefix means the number is
-stale (read from cache, see below). Clicking opens a breakdown with a progress track per window:
+Neutral under 70%, `systemOrange` at 70%+, `systemRed` at 90%+ — the standard
+macOS system colours, which adapt to Light and Dark Mode on their own. Each
+window in the menu bar is coloured by its own number. A `~` prefix means the number is
+stale (read from cache, see below). Clicking opens a breakdown:
 
-| Dark | Light |
-|---|---|
-| ![dark](docs/menu-dark.png) | ![light](docs/menu-light.png) |
-
-Track colours are independent of the menu bar text: green under 70%, amber at
-70%+, red at 90%+, each resolving to a darker variant in Light Mode.
+```
+5-hour       ████······  38%   resets 1h 12m
+7-day        ████████··  80%   resets 3d 14h
+Extra usage  ██████████ 100%   $223 of 200
+Updated just now · live
+```
 
 ## Data source
 
@@ -56,11 +56,9 @@ headless mode that prints exactly what the menu would show:
 ```bash
 ClaudeUsage --dump                 # print what the menu bar shows
 ClaudeUsage --dump --cache-only    # exercise the offline fallback path
-ClaudeUsage --render               # write the menu UI to /tmp/menu-{dark,light}.png
 ```
 
 (`ClaudeUsage` = `/Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage`.)
 
-`--render` draws the menu views offscreen in both appearances, which is the only
-way to check the layout — macOS status items and their menus do not appear in
-`screencapture` output.
+macOS status items and their menus do not appear in `screencapture` output, so
+`--dump` is the way to check what the app is actually showing.
