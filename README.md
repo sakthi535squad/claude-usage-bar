@@ -8,7 +8,9 @@ Menu bar shows the **binding** constraint — whichever window is closest to its
 7d 79%
 ```
 
-Black under 70%, orange at 70%+, red at 90%+. A `~` prefix means the number is
+Black under 70%, orange at 70%+, red at 90%+. The warning colours resolve to
+darker variants on a light menu bar, where macOS's `systemOrange` only reaches
+2.2:1 contrast against white. A `~` prefix means the number is
 stale (read from cache, see below). Clicking opens a breakdown:
 
 ```

@@ -162,9 +162,22 @@ func ago(_ date: Date) -> String {
     return "\(secs / 3600)h ago"
 }
 
+/// systemOrange/systemRed are tuned for dark backgrounds and wash out on a light
+/// menu bar, so each level resolves to a darker variant under the Aqua appearance.
+func adaptive(dark: NSColor, light: NSColor) -> NSColor {
+    NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    }
+}
+
+let warnColor = adaptive(dark: .systemOrange,
+                         light: NSColor(srgbRed: 0.60, green: 0.33, blue: 0.00, alpha: 1))
+let critColor = adaptive(dark: .systemRed,
+                         light: NSColor(srgbRed: 0.70, green: 0.10, blue: 0.10, alpha: 1))
+
 func color(for pct: Double) -> NSColor {
-    if pct >= 90 { return .systemRed }
-    if pct >= 70 { return .systemOrange }
+    if pct >= 90 { return critColor }
+    if pct >= 70 { return warnColor }
     return .labelColor
 }
 
