@@ -191,6 +191,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menuIsOpen = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // Without this, a cmd-dragged position is forgotten on every relaunch.
+        item.autosaveName = "ClaudeUsageStatusItem"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         setTitle("Claude …", pct: 0, dimmed: true)
         rebuildMenu()
