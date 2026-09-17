@@ -22,7 +22,7 @@ updated just now · live
 
 ## Data source
 
-Polls `https://api.anthropic.com/api/oauth/usage` every 60s — the same endpoint
+Polls `https://api.anthropic.com/api/oauth/usage` every 5 minutes — the same endpoint
 `/usage` uses inside Claude Code. The OAuth token is read fresh on each poll from
 the `Claude Code-credentials` Keychain item, via `/usr/bin/security`, so token
 rotations by Claude Code are picked up automatically and no credential is stored
@@ -32,6 +32,11 @@ If the API call fails (no token, expired token, offline), it falls back to
 `cachedUsageUtilization` in `~/.claude.json`, which Claude Code refreshes while
 it runs. That value can be well over an hour old, so the bar marks it with `~`
 and the menu says `cached`.
+
+Opening the menu never triggers a fetch — only the 5-minute timer and **Refresh
+Now** do. The endpoint rate-limits at roughly one request per minute and returns
+`Retry-After` on 429; that header is honoured rather than guessed at, and the app
+falls back to the cache (marked `~`) meanwhile.
 
 ## Build / install
 

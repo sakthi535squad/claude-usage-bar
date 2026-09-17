@@ -34,7 +34,7 @@ struct Usage {
 
 enum FetchError: Error {
     case noToken
-    case http(Int)
+    case http(Int, retryAfter: TimeInterval?)
     case malformed
 }
 
@@ -111,8 +111,12 @@ func fetchLive(completion: @escaping (Result<Usage, FetchError>) -> Void) {
     req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
     req.timeoutInterval = 15
     URLSession.shared.dataTask(with: req) { data, resp, _ in
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { return completion(.failure(.http(code))) }
+        let http = resp as? HTTPURLResponse
+        let code = http?.statusCode ?? 0
+        guard code == 200 else {
+            let retry = (http?.value(forHTTPHeaderField: "Retry-After")).flatMap(TimeInterval.init)
+            return completion(.failure(.http(code, retryAfter: retry)))
+        }
         guard let data,
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return completion(.failure(.malformed)) }
@@ -222,7 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setTitle("Claude …", pct: 0, dimmed: true)
         rebuildMenu()
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
         }
     }
@@ -248,11 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .failure(let e):
                     switch e {
                     case .noToken: self.lastError = "Not signed in to Claude Code"
-                    case .http(401): self.lastError = "Token expired — run any Claude Code session"
-                    case .http(429):
-                        self.backoffUntil = Date().addingTimeInterval(300)
-                        self.lastError = "Rate limited — retrying in 5 min"
-                    case .http(let c): self.lastError = "API error \(c)"
+                    case .http(401, _): self.lastError = "Token expired — run any Claude Code session"
+                    case .http(429, let retry):
+                        // The endpoint sends Retry-After; honour it rather than guessing.
+                        let wait = (retry ?? 60) + 5
+                        self.backoffUntil = Date().addingTimeInterval(wait)
+                        self.lastError = "Rate limited — retrying in \(Int(wait))s"
+                    case .http(let c, _): self.lastError = "API error \(c)"
                     case .malformed: self.lastError = "Unexpected API response"
                     }
                     // Only fall back to the cache when we have nothing live at all;
@@ -369,7 +375,9 @@ extension AppDelegate: NSMenuDelegate {
 
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
-        refresh()
+        // Opening the menu never fetches; only the timer and "Refresh Now" spend a
+        // request. This just applies any rebuild that was deferred while it was open.
+        rebuildMenu()
     }
 }
 
