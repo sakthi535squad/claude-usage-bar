@@ -179,6 +179,16 @@ let warnColor = adaptive(dark: .systemOrange,
 let critColor = adaptive(dark: .systemRed,
                          light: NSColor(srgbRed: 0.70, green: 0.10, blue: 0.10, alpha: 1))
 
+let okColor = adaptive(dark: .systemGreen,
+                       light: NSColor(srgbRed: 0.10, green: 0.45, blue: 0.20, alpha: 1))
+
+/// Fill colour for progress tracks and their percentages.
+func barColor(for pct: Double) -> NSColor {
+    if pct >= 90 { return critColor }
+    if pct >= 70 { return warnColor }
+    return okColor
+}
+
 func color(for pct: Double) -> NSColor {
     if pct >= 90 { return critColor }
     if pct >= 70 { return warnColor }
@@ -310,36 +320,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
         if let u = usage {
-            for w in u.windows {
-                let line = String(format: "%@ %@ %3d%%   resets %@",
-                                  pad(w.label, 12), bar(w.utilization),
-                                  Int(w.utilization.rounded()), countdown(to: w.resetsAt))
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = NSAttributedString(string: line, attributes: [
-                    .font: mono, .foregroundColor: color(for: w.utilization),
-                ])
+            for v in usageViews(u) {
+                let mi = NSMenuItem()
+                mi.view = v
                 menu.addItem(mi)
             }
-
-            if let e = u.extra, e.enabled {
-                menu.addItem(.separator())
-                let line = String(format: "%@ %@ %3d%%   %@%.0f of %.0f",
-                                  pad("Extra usage", 12), bar(e.utilization),
-                                  Int(e.utilization.rounded()),
-                                  e.currency == "USD" ? "$" : "", e.used, e.limit)
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = NSAttributedString(string: line, attributes: [
-                    .font: mono, .foregroundColor: color(for: e.utilization),
-                ])
-                menu.addItem(mi)
-            }
-
             menu.addItem(.separator())
-            let src = u.fromCache ? "cached from Claude Code" : "live"
-            menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
         }
 
         if let err = lastError {
@@ -403,6 +391,21 @@ extension AppDelegate: NSMenuDelegate {
 
 // `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
 // bar itself is invisible to screencapture, so this is how the data path is checked.
+if CommandLine.arguments.contains("--render") {
+    let sem = DispatchSemaphore(value: 0)
+    var got: Usage?
+    fetchLive { r in
+        if case .success(let u) = r { got = u } else { got = readCache() }
+        sem.signal()
+    }
+    _ = sem.wait(timeout: .now() + 20)
+    guard let u = got else { print("no usage"); exit(1) }
+    renderPreview(u, appearance: .darkAqua, to: "/tmp/menu-dark.png")
+    renderPreview(u, appearance: .aqua, to: "/tmp/menu-light.png")
+    print("wrote /tmp/menu-dark.png and /tmp/menu-light.png")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--dump") {
     let sem = DispatchSemaphore(value: 0)
     var result: Usage?

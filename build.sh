@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 APP="build/ClaudeUsage.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS"
 
-swiftc -O -framework Cocoa -o "$APP/Contents/MacOS/ClaudeUsage" Sources/main.swift
+swiftc -O -framework Cocoa -o "$APP/Contents/MacOS/ClaudeUsage" Sources/*.swift
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
