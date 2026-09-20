@@ -28,6 +28,12 @@ struct Usage {
     var binding: Window? {
         windows.max(by: { $0.utilization < $1.utilization })
     }
+
+    /// Older than two missed polls. A live reading that stops refreshing is just
+    /// as stale as a cached one, and used to display with no marker at all.
+    var isStale: Bool {
+        Date().timeIntervalSince(fetchedAt) > 660
+    }
 }
 
 // MARK: - Fetching
@@ -186,7 +192,7 @@ func shortLabel(_ key: String) -> String {
 /// Menu bar segments, one per window shown. Each carries its own utilisation so it
 /// can be coloured independently — a healthy 5h should not inherit a red 7d.
 func titleSegments(_ u: Usage) -> [(text: String, pct: Double)] {
-    let stale = u.fromCache ? "~" : ""
+    let stale = (u.fromCache || u.isStale) ? "~" : ""
     let shown = u.windows.filter { $0.key == "five_hour" || $0.key == "seven_day" }
     let use = shown.isEmpty ? (u.binding.map { [$0] } ?? []) : shown
     return use.map { ("\(shortLabel($0.key)) \(stale)\(Int($0.utilization.rounded()))%", $0.utilization) }
@@ -201,11 +207,14 @@ func titleText(_ u: Usage) -> String {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     var timer: Timer?
+    var displayTimer: Timer?
     var usage: Usage?
     var lastError: String?
     /// Swapping item.menu while the user has it open closes it mid-click, so
     /// refreshes that land during tracking defer their rebuild to menuDidClose.
     var menuIsOpen = false
+    /// Holding an activity token keeps App Nap from throttling the poll timer.
+    var activity: NSObjectProtocol?
     /// Set when the usage endpoint returns 429. Polling past a rate limit only
     /// deepens it, so scheduled refreshes are skipped until this passes.
     var backoffUntil: Date?
@@ -217,6 +226,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setTitle("Claude …", pct: 0, dimmed: true)
         rebuildMenu()
         refresh()
+
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated], reason: "poll Claude Code usage")
+
+        // Timers do not fire while the machine is asleep, so without this the
+        // readout stays frozen at whatever it was when the lid closed.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.refresh(manual: true) }
+
         let t = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
         }
@@ -224,6 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // this wakeup with others instead of waking the CPU on its own.
         t.tolerance = 30
         timer = t
+
+        // Staleness is computed at render time, so without a display-only tick the
+        // "~" would never appear precisely when fetching has stopped working.
+        let display = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.render()
+        }
+        display.tolerance = 15
+        displayTimer = display
     }
 
     static let barFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
@@ -338,7 +365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             menu.addItem(.separator())
-            let src = u.fromCache ? "cached from Claude Code" : "live"
+            let src = u.fromCache ? "cached from Claude Code"
+                : (u.isStale ? "stale — refresh to update" : "live")
             menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
         }
 
