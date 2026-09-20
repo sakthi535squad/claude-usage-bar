@@ -55,3 +55,10 @@ ClaudeUsage --dump --cache-only    # exercise the offline fallback path
 
 macOS status items and their menus do not appear in `screencapture` output, so
 `--dump` is the way to check what the app is actually showing.
+
+
+## Todo - future
+
+
+1. active running agent count
+2. a color scheme to show nearing 5 hr session limit + reaching near limits (customisable)
