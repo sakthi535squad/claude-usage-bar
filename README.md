@@ -55,3 +55,8 @@ ClaudeUsage --dump --cache-only    # exercise the offline fallback path
 
 macOS status items and their menus do not appear in `screencapture` output, so
 `--dump` is the way to check what the app is actually showing.
+
+## Planned
+
+See [TODO.md](TODO.md) — running agent/subagent count, and customisable
+colour thresholds.
