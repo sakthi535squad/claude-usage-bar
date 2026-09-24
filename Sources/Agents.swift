@@ -106,9 +106,13 @@ func countPendingAgents(inTranscriptAt path: String, tailBytes: Int = 1_048_576)
 
 /// Menu bar suffix, or nil when nothing is running. Shared by the GUI and --dump
 /// so what gets verified on the command line is what actually gets displayed.
+/// Blank run the spinner view is drawn over. Must be at least as wide as the
+/// spinner or it overlaps the count; measured at 15.12pt for a 12pt spinner.
+let spinnerPlaceholder = "\u{2007}\u{2007}"
+
 func agentSuffix(_ snap: AgentSnapshot) -> String? {
     guard snap.anyRunning else { return nil }
-    var label = "\u{2007} \(snap.busyCount) busy"
+    var label = "\(spinnerPlaceholder) \(snap.busyCount) busy"
     if snap.subagentCount > 0 { label += " (+\(snap.subagentCount))" }
     return label
 }

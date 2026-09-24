@@ -210,7 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var displayTimer: Timer?
     var agents = AgentSnapshot(sessions: [])
-    let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
+    static let spinnerSize: CGFloat = 12
+    let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: spinnerSize, height: spinnerSize))
     /// Used to fire only on the busy -> nothing-running edge, not every tick.
     var wasRunning = false
     var usage: Usage?
@@ -353,16 +354,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Parks the spinner over the placeholder gap at the start of the suffix.
     func positionSpinner() {
         guard let button = item.button else { return }
-        if agents.anyRunning {
-            if spinner.superview == nil { button.addSubview(spinner) }
-            let x = button.bounds.width - suffixWidth + 1
-            spinner.frame = NSRect(x: x, y: (button.bounds.height - 14) / 2 + 1,
-                                   width: 14, height: 14)
-            spinner.start()
-        } else {
+        guard agents.anyRunning else {
             spinner.stop()
             spinner.removeFromSuperview()
+            return
         }
+        if spinner.superview == nil { button.addSubview(spinner) }
+
+        let size = Self.spinnerSize
+        let gap = (spinnerPlaceholder as NSString)
+            .size(withAttributes: [.font: Self.barFont]).width
+        // Centre it inside the blank run rather than at the run's leading edge,
+        // which is what made it sit on top of the count.
+        let suffixStart = button.bounds.width - suffixWidth
+        let x = suffixStart + (gap - size) / 2
+        spinner.frame = NSRect(x: x, y: (button.bounds.height - size) / 2,
+                               width: size, height: size)
+        spinner.start()
     }
 
     /// Width of the trailing agent suffix, used to place the spinner over its gap.
