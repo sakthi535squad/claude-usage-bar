@@ -1,5 +1,6 @@
 import Cocoa
 import ServiceManagement
+import UserNotifications
 
 // MARK: - Model
 
@@ -208,6 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     var timer: Timer?
     var displayTimer: Timer?
+    var agents = AgentSnapshot(sessions: [])
+    /// Used to fire only on the busy -> nothing-running edge, not every tick.
+    var wasRunning = false
     var usage: Usage?
     var lastError: String?
     /// Swapping item.menu while the user has it open closes it mid-click, so
@@ -224,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.autosaveName = "ClaudeUsageStatusItem"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         setTitle("Claude …", pct: 0, dimmed: true)
+        refreshAgents()
         rebuildMenu()
         refresh()
 
@@ -246,7 +251,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Staleness is computed at render time, so without a display-only tick the
         // "~" would never appear precisely when fetching has stopped working.
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert]) { _, _ in }
+
         let display = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refreshAgents()
             self?.render()
         }
         display.tolerance = 15
@@ -324,7 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setTitle("Claude ⚠", pct: 0, dimmed: true)
             return
         }
-        setTitle(segments: titleSegments(u))
+        var segs = titleSegments(u)
+        if let suffix = agentSuffix(agents) { segs.append((text: suffix, pct: 0)) }
+        setTitle(segments: segs)
         rebuildMenu()
     }
 
@@ -370,6 +381,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
         }
 
+        let mono2 = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        if agents.sessions.isEmpty {
+            menu.addItem(disabled("No Claude Code sessions running"))
+        } else {
+            for a in agents.sessions {
+                var line = String(format: "%@ %@", pad(a.name, 16), pad(a.status, 8))
+                if a.subagents > 0 { line += "+\(a.subagents) sub" }
+                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                mi.attributedTitle = NSAttributedString(string: line, attributes: [
+                    .font: mono2,
+                    .foregroundColor: a.isBusy ? NSColor.labelColor : NSColor.secondaryLabelColor,
+                ])
+                menu.addItem(mi)
+            }
+            let summary = agents.anyRunning
+                ? "\(agents.busyCount) busy · \(agents.subagentCount) subagent(s)"
+                : "All agents idle — nothing running"
+            menu.addItem(disabled(summary))
+        }
+        menu.addItem(.separator())
+
         if let err = lastError {
             menu.addItem(disabled("⚠ \(err)"))
         }
@@ -398,7 +430,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mi
     }
 
-    @objc func doRefresh() { refresh(manual: true) }
+    @objc func doRefresh() {
+        refreshAgents()
+        refresh(manual: true)
+    }
+
+    func refreshAgents() {
+        let snapshot = agentSnapshot()
+        let running = snapshot.anyRunning
+        // Only announce the transition, and only after having seen work in flight.
+        if wasRunning, !running { notifyAllStopped() }
+        wasRunning = running
+        agents = snapshot
+    }
+
+    func notifyAllStopped() {
+        let content = UNMutableNotificationContent()
+        content.title = "All agents stopped"
+        content.body = agents.sessions.isEmpty
+            ? "No Claude Code sessions running."
+            : "\(agents.sessions.count) session(s) idle — nothing in flight."
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString,
+                                  content: content, trigger: nil))
+    }
 
     @objc func openUsage() {
         NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
@@ -431,6 +486,22 @@ extension AppDelegate: NSMenuDelegate {
 
 // `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
 // bar itself is invisible to screencapture, so this is how the data path is checked.
+if CommandLine.arguments.contains("--agents") {
+    let snap = agentSnapshot()
+    if snap.sessions.isEmpty {
+        print("No Claude Code sessions running")
+    } else {
+        for a in snap.sessions {
+            print(String(format: "%@ %@ %@ subagents=%d",
+                         pad(String(a.pid), 8), pad(a.name, 18), pad(a.status, 9), a.subagents))
+        }
+        print("---")
+        print("agents=\(snap.sessions.count) busy=\(snap.busyCount) subagents=\(snap.subagentCount)")
+        print(snap.anyRunning ? "something is running" : "ALL AGENTS STOPPED")
+    }
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--dump") {
     let sem = DispatchSemaphore(value: 0)
     var result: Usage?
@@ -450,7 +521,9 @@ if CommandLine.arguments.contains("--dump") {
     _ = sem.wait(timeout: .now() + 20)
     if let e = err { print("live fetch failed: \(e)") }
     guard let u = result else { print("no usage available"); exit(1) }
-    print("menu bar: \(titleText(u))")
+    var barText = titleText(u)
+    if let suffix = agentSuffix(agentSnapshot()) { barText += "  " + suffix }
+    print("menu bar: \(barText)")
     for w in u.windows {
         print(String(format: "  %@ %@ %3d%%   resets %@", pad(w.label, 12),
                      bar(w.utilization), Int(w.utilization.rounded()), countdown(to: w.resetsAt)))
