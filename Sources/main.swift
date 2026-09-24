@@ -210,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var displayTimer: Timer?
     var agents = AgentSnapshot(sessions: [])
+    let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: 14, height: 14))
     /// Used to fire only on the busy -> nothing-running edge, not every tick.
     var wasRunning = false
     var usage: Usage?
@@ -333,10 +334,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setTitle("Claude ⚠", pct: 0, dimmed: true)
             return
         }
-        var segs = titleSegments(u)
-        if let suffix = agentSuffix(agents) { segs.append((text: suffix, pct: 0)) }
-        setTitle(segments: segs)
+        renderTitle()
         rebuildMenu()
+    }
+
+    /// Title only. The spinner runs several times a second, and rebuilding the
+    /// whole menu at that rate would be wasteful.
+    func renderTitle() {
+        guard let u = usage, u.binding != nil else { return }
+        var segs = titleSegments(u)
+        if let suffix = agentSuffix(agents) {
+            segs.append((text: suffix, pct: 0))
+        }
+        setTitle(segments: segs)
+        positionSpinner()
+    }
+
+    /// Parks the spinner over the placeholder gap at the start of the suffix.
+    func positionSpinner() {
+        guard let button = item.button else { return }
+        if agents.anyRunning {
+            if spinner.superview == nil { button.addSubview(spinner) }
+            let x = button.bounds.width - suffixWidth + 1
+            spinner.frame = NSRect(x: x, y: (button.bounds.height - 14) / 2 + 1,
+                                   width: 14, height: 14)
+            spinner.start()
+        } else {
+            spinner.stop()
+            spinner.removeFromSuperview()
+        }
+    }
+
+    /// Width of the trailing agent suffix, used to place the spinner over its gap.
+    var suffixWidth: CGFloat {
+        guard let suffix = agentSuffix(agents) else { return 0 }
+        return (suffix as NSString)
+            .size(withAttributes: [.font: Self.barFont]).width
     }
 
     func rebuildMenu() {
@@ -386,15 +419,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabled("No Claude Code sessions running"))
         } else {
             for a in agents.sessions {
-                var line = String(format: "%@ %@", pad(a.label, 36), pad(a.status, 8))
+                // Shape carries the status as well as colour, so the rows stay
+                // readable without relying on colour alone.
+                let (dot, tint): (String, NSColor) = {
+                    switch a.status {
+                    case "busy":    return ("\u{25CF}", .systemGreen)
+                    case "waiting": return ("\u{25D0}", .systemOrange)
+                    default:        return ("\u{25CB}", .tertiaryLabelColor)
+                    }
+                }()
+
+                var line = "\(dot) \(pad(a.label, 36))\(pad(a.status, 8))"
                 if a.subagents > 0 { line += "+\(a.subagents) sub" }
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = NSAttributedString(string: line, attributes: [
+
+                let attributed = NSMutableAttributedString(string: line, attributes: [
                     .font: mono2,
                     .foregroundColor: a.isBusy ? NSColor.labelColor : NSColor.secondaryLabelColor,
                 ])
+                // Tint only the dot and the status word; the title stays neutral.
+                attributed.addAttribute(.foregroundColor, value: tint,
+                                        range: NSRange(location: 0, length: 1))
+                if let r = line.range(of: a.status, options: .backwards) {
+                    attributed.addAttribute(.foregroundColor, value: tint,
+                                            range: NSRange(r, in: line))
+                }
+                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                mi.attributedTitle = attributed
                 menu.addItem(mi)
             }
+
             let summary = agents.anyRunning
                 ? "\(agents.busyCount) busy · \(agents.subagentCount) subagent(s)"
                 : "All agents idle — nothing running"

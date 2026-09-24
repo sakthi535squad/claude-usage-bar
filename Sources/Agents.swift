@@ -108,7 +108,7 @@ func countPendingAgents(inTranscriptAt path: String, tailBytes: Int = 1_048_576)
 /// so what gets verified on the command line is what actually gets displayed.
 func agentSuffix(_ snap: AgentSnapshot) -> String? {
     guard snap.anyRunning else { return nil }
-    var label = "· \(snap.busyCount) busy"
+    var label = "\u{2007} \(snap.busyCount) busy"
     if snap.subagentCount > 0 { label += " (+\(snap.subagentCount))" }
     return label
 }

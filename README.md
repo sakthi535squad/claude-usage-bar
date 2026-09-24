@@ -58,6 +58,16 @@ macOS status items and their menus do not appear in `screencapture` output, so
 
 ## Agents
 
+A spinner appears in the menu bar while anything is running, and each row in the
+dropdown is tinted by status: green filled dot for busy, orange half dot for
+waiting, hollow dot dimmed for idle.
+
+The spinner is a layer-backed `CAShapeLayer` with a Core Animation rotation, not
+an animated title. Re-setting an `NSStatusItem` title measured **~13 ms a frame**
+because it forces the entire menu bar to re-measure — 2.93% CPU at just 2 fps,
+6.62% at 8 fps. Handing a layer to the compositor instead costs **0.37%** at
+60 fps, indistinguishable from idle.
+
 When anything is working, the menu bar gains a suffix: `· 2 busy` for top-level
 sessions, `· 2 busy (+3)` when subagents are also in flight. When nothing is
 running it disappears, and a notification fires on that busy -> idle edge.
