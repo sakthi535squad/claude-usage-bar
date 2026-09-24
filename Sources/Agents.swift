@@ -7,6 +7,8 @@ struct AgentSession {
     let status: String        // busy | idle | waiting
     let sessionId: String
     var subagents: Int = 0
+    /// Conductor chat title if there is one, else branch, else the derived name.
+    var label: String = ""
 
     var isBusy: Bool { status == "busy" }
 }
@@ -45,7 +47,7 @@ func readAgentSessions() -> [AgentSession] {
             status: (root["status"] as? String) ?? "unknown",
             sessionId: (root["sessionId"] as? String) ?? ""))
     }
-    return out.sorted { $0.name < $1.name }
+    return out
 }
 
 /// Transcripts live under a slug of the cwd with every "/" replaced by "-".
@@ -113,8 +115,16 @@ func agentSuffix(_ snap: AgentSnapshot) -> String? {
 
 func agentSnapshot() -> AgentSnapshot {
     var sessions = readAgentSessions()
+    let titles = conductorTitles()
     for i in sessions.indices {
         sessions[i].subagents = countRunningSubagents(sessions[i])
+        if let title = titles[sessions[i].sessionId] {
+            sessions[i].label = truncate(title, 34)
+        } else if let branch = gitBranch(sessions[i].cwd) {
+            sessions[i].label = truncate(branch, 34)
+        } else {
+            sessions[i].label = sessions[i].name
+        }
     }
-    return AgentSnapshot(sessions: sessions)
+    return AgentSnapshot(sessions: sessions.sorted { $0.label < $1.label })
 }

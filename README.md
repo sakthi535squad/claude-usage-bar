@@ -62,6 +62,11 @@ When anything is working, the menu bar gains a suffix: `· 2 busy` for top-level
 sessions, `· 2 busy (+3)` when subagents are also in flight. When nothing is
 running it disappears, and a notification fires on that busy -> idle edge.
 
+Each session is labelled with its Conductor chat title ("Claude usage tracker
+Mac") rather than Claude Code's derived name ("worcester-a6"), joined on
+`claude_session_id` against Conductor's read-only sqlite database. Sessions not
+started from Conductor fall back to their git branch, then to the derived name.
+
 Counts come from two places. Top-level sessions are registered by Claude Code at
 `~/.claude/sessions/<pid>.json` with a `status` of `busy`/`idle`/`waiting`; each
 entry is confirmed with `kill(pid, 0)` since the file outlives a crash.

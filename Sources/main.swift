@@ -386,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabled("No Claude Code sessions running"))
         } else {
             for a in agents.sessions {
-                var line = String(format: "%@ %@", pad(a.name, 16), pad(a.status, 8))
+                var line = String(format: "%@ %@", pad(a.label, 36), pad(a.status, 8))
                 if a.subagents > 0 { line += "+\(a.subagents) sub" }
                 let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
                 mi.attributedTitle = NSAttributedString(string: line, attributes: [
@@ -493,7 +493,7 @@ if CommandLine.arguments.contains("--agents") {
     } else {
         for a in snap.sessions {
             print(String(format: "%@ %@ %@ subagents=%d",
-                         pad(String(a.pid), 8), pad(a.name, 18), pad(a.status, 9), a.subagents))
+                         pad(String(a.pid), 8), pad(a.label, 36), pad(a.status, 9), a.subagents))
         }
         print("---")
         print("agents=\(snap.sessions.count) busy=\(snap.busyCount) subagents=\(snap.subagentCount)")
