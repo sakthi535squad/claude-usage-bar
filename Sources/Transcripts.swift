@@ -1,43 +1,13 @@
 import Foundation
 
-/// Context colours: under `contextWarnTokens` neutral, then orange, then red at
-/// `contextAlertTokens`. The point is to steer a session (compact, clear, hand
-/// off) before every turn is re-reading a huge context.
-let contextWarnTokens = 200_000
-let contextAlertTokens = 500_000
-/// Show the countdown once a warm cache is this close to expiring.
-let cacheExpiryWarn: TimeInterval = 15 * 60
-
-/// What the most recent API request in a transcript says about its context.
-struct ContextStats {
-    /// Everything sent as input on that request: cache reads + writes + uncached.
-    let tokens: Int
-    /// Share of `tokens` served from cache.
-    let cacheHit: Double
-    let requestedAt: Date
-    let ttl: TimeInterval
-
-    var expiresAt: Date { requestedAt.addingTimeInterval(ttl) }
-    func isCold(at now: Date = Date()) -> Bool { now >= expiresAt }
-}
-
 /// Running state for one transcript. Advanced incrementally, so each pass reads
 /// only what was appended since the last one.
 final class TranscriptState {
     fileprivate(set) var offset: UInt64 = 0
     fileprivate(set) var pendingAgents = Set<String>()
-    fileprivate(set) var context: ContextStats?
-    fileprivate var lastMessageId: String?
-    /// The cache TTL is only visible on requests that write; reads inherit it.
-    /// Default to the shorter TTL so an unknown session reads cold, not warm.
-    fileprivate var ttl: TimeInterval = 300
+    /// Input sent on the most recent API request: cache reads + writes + uncached.
+    fileprivate(set) var contextTokens: Int?
 }
-
-private let transcriptDate: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f
-}()
 
 private let newline = UInt8(ascii: "\n")
 private let notificationOpen = "<tool-use-id>"
@@ -122,39 +92,11 @@ final class TranscriptReader {
 
         if root["type"] as? String == "assistant",
            let usage = message["usage"] as? [String: Any] {
-            applyUsage(usage, messageId: message["id"] as? String,
-                       timestamp: root["timestamp"] as? String, to: state)
+            let total = ["cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens"]
+                .reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
+            // Synthetic entries (interrupts, local errors) carry all-zero usage.
+            if total > 0 { state.contextTokens = total }
         }
-    }
-
-    private func applyUsage(_ usage: [String: Any], messageId: String?,
-                            timestamp: String?, to state: TranscriptState) {
-        let read = usage["cache_read_input_tokens"] as? Int ?? 0
-        let written = usage["cache_creation_input_tokens"] as? Int ?? 0
-        let uncached = usage["input_tokens"] as? Int ?? 0
-        let total = read + written + uncached
-        // Synthetic entries (interrupts, local errors) carry all-zero usage.
-        guard total > 0 else { return }
-
-        if let split = usage["cache_creation"] as? [String: Any] {
-            if (split["ephemeral_1h_input_tokens"] as? Int ?? 0) > 0 {
-                state.ttl = 3600
-            } else if (split["ephemeral_5m_input_tokens"] as? Int ?? 0) > 0 {
-                state.ttl = 300
-            }
-        }
-
-        // One response is written as several lines sharing an id. The cache
-        // clock starts with the request, so keep the earliest timestamp.
-        let sameRequest = messageId != nil && messageId == state.lastMessageId
-        let requestedAt = sameRequest
-            ? state.context?.requestedAt
-            : timestamp.flatMap { transcriptDate.date(from: $0) }
-        state.lastMessageId = messageId
-        state.context = ContextStats(tokens: total,
-                                     cacheHit: Double(read) / Double(total),
-                                     requestedAt: requestedAt ?? Date(),
-                                     ttl: state.ttl)
     }
 }
 
@@ -174,12 +116,4 @@ func formatTokens(_ n: Int) -> String {
     if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 1000 { return "\(n / 1000)k" }
     return "\(n)"
-}
-
-/// "97%", "97% · 8m" near expiry, or "cold" once the cache has lapsed.
-func formatCache(_ c: ContextStats, now: Date = Date()) -> String {
-    if c.isCold(at: now) { return "cold" }
-    let pct = "\(Int((c.cacheHit * 100).rounded()))%"
-    let left = c.expiresAt.timeIntervalSince(now)
-    return left <= cacheExpiryWarn ? "\(pct) · \(max(1, Int(left / 60)))m" : pct
 }

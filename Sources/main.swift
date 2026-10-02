@@ -216,8 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let scanQueue = DispatchQueue(label: "claude-usage.scan", qos: .utility)
     static let spinnerSize: CGFloat = 12
     let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: spinnerSize, height: spinnerSize))
-    /// Used to fire only on the busy -> nothing-running edge, not every tick.
-    var wasRunning = false
+    /// Live readings of the 5-hour window, for the "full by" forecast.
+    let pace = PaceTracker()
+    /// One notification per wait: keyed by session and the time the wait began.
+    var notifiedWaits = Set<String>()
     var usage: Usage?
     var lastError: String?
     /// Swapping item.menu while the user has it open closes it mid-click, so
@@ -257,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Staleness is computed at render time, so without a display-only tick the
         // "~" would never appear precisely when fetching has stopped working.
+        UNUserNotificationCenter.current().delegate = self
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert]) { _, _ in }
 
@@ -279,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.attributedTitle = NSAttributedString(string: text, attributes: attrs)
     }
 
-    func setTitle(segments: [(text: String, pct: Double)]) {
+    func setTitle(segments: [(text: String, color: NSColor)]) {
         let out = NSMutableAttributedString()
         for (i, seg) in segments.enumerated() {
             if i > 0 {
@@ -287,7 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             out.append(NSAttributedString(string: seg.text, attributes: [
                 .font: Self.barFont,
-                .foregroundColor: color(for: seg.pct),
+                .foregroundColor: seg.color,
             ]))
         }
         item.button?.image = nil
@@ -306,6 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch result {
                 case .success(let u):
                     self.usage = u
+                    if let w = u.windows.first(where: { $0.key == "five_hour" }), let r = w.resetsAt {
+                        self.pace.record(pct: w.utilization, resetsAt: r, at: u.fetchedAt)
+                    }
                     self.lastError = nil
                     self.backoffUntil = nil
                 case .failure(let e):
@@ -352,9 +358,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// whole menu at that rate would be wasteful.
     func renderTitle() {
         guard let u = usage, u.binding != nil else { return }
-        var segs = titleSegments(u)
+        var segs = titleSegments(u).map { (text: $0.text, color: color(for: $0.pct)) }
+        if let badge = waitingBadge(agents) {
+            segs.insert((text: badge, color: .systemOrange), at: 0)
+        }
         if let suffix = agentSuffix(agents) {
-            segs.append((text: suffix, pct: 0))
+            segs.append((text: suffix, color: .labelColor))
         }
         setTitle(segments: segs)
         positionSpinner()
@@ -414,6 +423,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .font: mono, .foregroundColor: color(for: w.utilization),
                 ])
                 menu.addItem(mi)
+                if w.key == "five_hour", !u.fromCache {
+                    menu.addItem(paceItem(pace.forecast(), resetsAt: w.resetsAt, font: mono))
+                }
             }
 
             if let e = u.extra, e.enabled {
@@ -435,21 +447,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
         }
 
-        let mono2 = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let rowFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let now = Date()
         if agents.sessions.isEmpty {
             menu.addItem(disabled("No Claude Code sessions running"))
-        } else {
-            let now = Date()
-            for a in agents.sessions {
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = sessionRow(a, font: mono2, now: now)
-                menu.addItem(mi)
-            }
-
-            let summary = agents.anyRunning
-                ? "\(agents.busyCount) busy · \(agents.subagentCount) subagent(s)"
-                : "All agents idle — nothing running"
-            menu.addItem(disabled(summary))
+        }
+        if !agents.waiting.isEmpty {
+            menu.addItem(disabled("NEEDS YOU"))
+            for a in agents.waiting { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
+        }
+        if !agents.busy.isEmpty {
+            menu.addItem(disabled("WORKING"))
+            for a in agents.busy { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
+        }
+        let idle = agents.idle
+        if !idle.isEmpty {
+            // Idle sessions need nothing from you, so they fold away.
+            let fold = NSMenuItem(title: "\(idle.count) idle", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for a in idle { sub.addItem(sessionItem(a, font: rowFont, now: now)) }
+            fold.submenu = sub
+            menu.addItem(fold)
         }
         menu.addItem(.separator())
 
@@ -491,25 +509,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let snapshot = self.scanner.snapshot()
             DispatchQueue.main.async {
-                let running = snapshot.anyRunning
-                // Only announce the transition, and only after having seen work in flight.
-                if self.wasRunning, !running { self.notifyAllStopped(snapshot) }
-                self.wasRunning = running
+                self.notifyWaits(snapshot)
                 self.agents = snapshot
                 self.render()
             }
         }
     }
 
-    func notifyAllStopped(_ snapshot: AgentSnapshot) {
-        let content = UNMutableNotificationContent()
-        content.title = "All agents stopped"
-        content.body = snapshot.sessions.isEmpty
-            ? "No Claude Code sessions running."
-            : "\(snapshot.sessions.count) session(s) idle — nothing in flight."
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: UUID().uuidString,
-                                  content: content, trigger: nil))
+    /// A session blocked on a dialog makes no progress until you answer it, and
+    /// nothing on screen says so when its window is not in front.
+    func notifyWaits(_ snapshot: AgentSnapshot) {
+        let now = Date()
+        var current = Set<String>()
+        for a in snapshot.waiting {
+            guard let since = a.statusSince else { continue }
+            let key = "\(a.sessionId)@\(since.timeIntervalSince1970)"
+            current.insert(key)
+            guard now.timeIntervalSince(since) >= waitingNotifyAfter,
+                  !notifiedWaits.contains(key) else { continue }
+            notifiedWaits.insert(key)
+            let content = UNMutableNotificationContent()
+            content.title = "\(a.label) needs you"
+            content.body = "Waiting \(formatDuration(now.timeIntervalSince(since)))"
+                + (a.waitingFor.map { " — \($0)" } ?? "")
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(identifier: key, content: content, trigger: nil))
+        }
+        // Forget waits that ended, so the set does not grow without bound.
+        notifiedWaits.formIntersection(current)
+    }
+
+    func sessionItem(_ a: AgentSession, font: NSFont, now: Date) -> NSMenuItem {
+        let mi = NSMenuItem(title: "", action: a.fromConductor ? #selector(openConductor) : nil,
+                            keyEquivalent: "")
+        mi.target = self
+        mi.attributedTitle = sessionRow(a, font: font, now: now)
+        return mi
+    }
+
+    func paceItem(_ f: PaceForecast, resetsAt: Date?, font: NSFont) -> NSMenuItem {
+        let clock = DateFormatter()
+        clock.timeStyle = .short
+        let (text, tint): (String, NSColor) = {
+            switch f {
+            case .measuring:
+                return ("measuring pace…", .tertiaryLabelColor)
+            case .full(let at):
+                let reset = resetsAt.map { ", resets \(clock.string(from: $0))" } ?? ""
+                return ("full by \(clock.string(from: at))\(reset)", .systemRed)
+            case .onPace(let pct):
+                return ("on pace — ~\(Int(pct.rounded()))% at reset", .secondaryLabelColor)
+            }
+        }()
+        let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        mi.attributedTitle = NSAttributedString(string: "\(pad("", 12)) \u{21B3} \(text)", attributes: [
+            .font: font, .foregroundColor: tint,
+        ])
+        return mi
+    }
+
+    @objc func openConductor() {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.conductor.app").first {
+            app.activate()
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.conductor.app") {
+            NSWorkspace.shared.openApplication(at: url, configuration: .init())
+        }
     }
 
     @objc func openUsage() {
@@ -530,7 +594,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// One dropdown row: status dot, label, context size, cache state, status.
+/// One session row: status dot, label, how long it has been in that state, and
+/// only the warnings that ask for action (big context, silence, what it waits on).
 /// Shape carries the status as well as colour, so rows stay readable without
 /// relying on colour alone.
 func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedString {
@@ -541,22 +606,7 @@ func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedStrin
         default:        return ("\u{25CB}", .tertiaryLabelColor)
         }
     }()
-    let base: NSColor = a.isBusy ? .labelColor : .secondaryLabelColor
-
-    let sizeColor: NSColor = {
-        guard let c = a.context else { return base }
-        if c.tokens >= contextAlertTokens { return .systemRed }
-        if c.tokens >= contextWarnTokens { return .systemOrange }
-        return base
-    }()
-    let cacheColor: NSColor = {
-        guard let c = a.context else { return base }
-        if c.isCold(at: now) { return .tertiaryLabelColor }
-        if c.expiresAt.timeIntervalSince(now) <= cacheExpiryWarn { return .systemOrange }
-        // A low hit on a warm session means something dropped the cache.
-        if c.cacheHit < 0.5 { return .systemOrange }
-        return base
-    }()
+    let base: NSColor = a.isBusy || a.isWaiting ? .labelColor : .secondaryLabelColor
 
     let out = NSMutableAttributedString()
     func add(_ s: String, _ color: NSColor) {
@@ -564,11 +614,36 @@ func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedStrin
     }
     add("\(dot) ", tint)
     add(pad(a.label, 36), base)
-    add(pad(a.context.map { formatTokens($0.tokens) } ?? "—", 7), sizeColor)
-    add(pad(a.context.map { formatCache($0, now: now) } ?? "—", 11), cacheColor)
-    add(pad(a.status, 8), tint)
-    if a.subagents > 0 { add("+\(a.subagents) sub", base) }
+
+    let since = a.statusSince.map { " " + formatDuration(now.timeIntervalSince($0)) } ?? ""
+    add(pad(a.status + since, 16), a.isWaiting ? .systemOrange : base)
+
+    if let tokens = a.contextTokens, tokens >= contextWarnTokens {
+        add(pad(formatTokens(tokens), 7), tokens >= contextAlertTokens ? .systemRed : .systemOrange)
+    } else {
+        add(pad("", 7), base)
+    }
+    if a.subagents > 0 { add("+\(a.subagents) sub  ", base) }
+    if let quiet = a.silence(at: now) { add("\u{26A0} silent \(formatDuration(quiet))", .systemOrange) }
+    if a.isWaiting, let why = a.waitingFor { add(why, .secondaryLabelColor) }
     return out
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// A menu bar app counts as frontmost often enough that, without this,
+    /// macOS swallows the banner.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler done: @escaping () -> Void) {
+        openConductor()
+        done()
+    }
 }
 
 extension AppDelegate: NSMenuDelegate {
@@ -589,16 +664,12 @@ if CommandLine.arguments.contains("--agents") {
     if snap.sessions.isEmpty {
         print("No Claude Code sessions running")
     } else {
-        for a in snap.sessions {
-            let size = a.context.map { formatTokens($0.tokens) } ?? "—"
-            let cache = a.context.map { formatCache($0) } ?? "—"
-            print(String(format: "%@ %@ %@ %@ %@ subagents=%d",
-                         pad(String(a.pid), 8), pad(a.label, 36), pad(size, 6),
-                         pad(cache, 10), pad(a.status, 9), a.subagents))
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        for a in snap.waiting + snap.busy + snap.idle {
+            print(pad(String(a.pid), 7) + sessionRow(a, font: font, now: Date()).string)
         }
         print("---")
-        print("agents=\(snap.sessions.count) busy=\(snap.busyCount) subagents=\(snap.subagentCount)")
-        print(snap.anyRunning ? "something is running" : "ALL AGENTS STOPPED")
+        print("waiting=\(snap.waiting.count) busy=\(snap.busyCount) idle=\(snap.idle.count) subagents=\(snap.subagentCount)")
     }
     exit(0)
 }
@@ -623,7 +694,9 @@ if CommandLine.arguments.contains("--dump") {
     if let e = err { print("live fetch failed: \(e)") }
     guard let u = result else { print("no usage available"); exit(1) }
     var barText = titleText(u)
-    if let suffix = agentSuffix(SessionScanner().snapshot()) { barText += "  " + suffix }
+    let snap = SessionScanner().snapshot()
+    if let badge = waitingBadge(snap) { barText = badge + "  " + barText }
+    if let suffix = agentSuffix(snap) { barText += "  " + suffix }
     print("menu bar: \(barText)")
     for w in u.windows {
         print(String(format: "  %@ %@ %3d%%   resets %@", pad(w.label, 12),

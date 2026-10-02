@@ -44,29 +44,15 @@ check("background done via queued notification", pending([launch, asyncAckA, que
 check("background done via user notification", pending([launch, asyncAckA, userDoneA]), 0)
 check("missing file", TranscriptReader().update(path: "/tmp/does-not-exist.jsonl") == nil, true)
 
-// Usage
-func usageLine(id: String, ts: String, read: Int, write: Int, input: Int, ttl1h: Bool = true) -> String {
-    let split = ttl1h ? #"{"ephemeral_1h_input_tokens":\#(write),"ephemeral_5m_input_tokens":0}"#
-                      : #"{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":\#(write)}"#
-    return #"{"type":"assistant","timestamp":"\#(ts)","message":{"id":"\#(id)","role":"assistant","content":[{"type":"text","text":"—"}],"usage":{"input_tokens":\#(input),"cache_read_input_tokens":\#(read),"cache_creation_input_tokens":\#(write),"cache_creation":\#(split)}}}"#
+// Context size
+func usageLine(id: String, read: Int, write: Int, input: Int) -> String {
+    #"{"type":"assistant","message":{"id":"\#(id)","role":"assistant","content":[{"type":"text","text":"—"}],"usage":{"input_tokens":\#(input),"cache_read_input_tokens":\#(read),"cache_creation_input_tokens":\#(write)}}}"#
 }
-let synthetic = #"{"type":"assistant","timestamp":"2026-10-03T10:09:00.000Z","message":{"id":"msg_syn","role":"assistant","content":[],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#
-
-write([
-    usageLine(id: "msg_1", ts: "2026-10-03T10:00:00.000Z", read: 0, write: 50_000, input: 10),
-    usageLine(id: "msg_2", ts: "2026-10-03T10:05:00.000Z", read: 90_000, write: 10_000, input: 0),
-    usageLine(id: "msg_2", ts: "2026-10-03T10:05:30.000Z", read: 90_000, write: 10_000, input: 0),
-    synthetic,
-])
-let ctx = TranscriptReader().update(path: fixture)?.context
-check("context = last request input", ctx?.tokens, 100_000)
-check("cache hit of last request", ctx?.cacheHit, 0.9)
-check("1h TTL picked up from write split", ctx?.ttl, 3600)
-check("earliest timestamp kept for one request id",
-      ctx?.requestedAt, ISO8601DateFormatter().date(from: "2026-10-03T10:05:00Z"))
-
-write([usageLine(id: "msg_1", ts: "2026-10-03T10:00:00.000Z", read: 0, write: 500, input: 0, ttl1h: false)])
-check("5m TTL picked up", TranscriptReader().update(path: fixture)?.context?.ttl, 300)
+let synthetic = #"{"type":"assistant","message":{"id":"msg_syn","role":"assistant","content":[],"usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#
+write([usageLine(id: "msg_1", read: 0, write: 50_000, input: 10),
+       usageLine(id: "msg_2", read: 90_000, write: 10_000, input: 5),
+       synthetic])
+check("context = last real request's input", TranscriptReader().update(path: fixture)?.contextTokens, 100_005)
 
 // Incremental reading
 let reader = TranscriptReader()
@@ -80,12 +66,12 @@ check("completed line consumed on next pass", reader.update(path: fixture)?.pend
 // A multi-byte character split across two writes must not poison either pass.
 let r2 = TranscriptReader()
 write([])
-let line = Data((usageLine(id: "msg_u", ts: "2026-10-03T11:00:00.000Z", read: 1, write: 1, input: 1) + "\n").utf8)
+let line = Data((usageLine(id: "msg_u", read: 1, write: 1, input: 1) + "\n").utf8)
 let dash = line.firstIndex(of: 0xE2)!   // first byte of "—"
 appendBytes(line[..<(dash + 1)])
 r2.update(path: fixture)
 appendBytes(line[(dash + 1)...])
-check("multi-byte split across passes", r2.update(path: fixture)?.context?.tokens, 3)
+check("multi-byte split across passes", r2.update(path: fixture)?.contextTokens, 3)
 
 write([launch])
 let r3 = TranscriptReader()
@@ -93,16 +79,54 @@ r3.update(path: fixture)
 write([])
 check("rewritten (shrunk) file resets state", r3.update(path: fixture)?.pendingAgents.count, 0)
 
-// Formatting
+// Sessions
 let now = Date()
-func stats(age: TimeInterval, hit: Double = 0.97) -> ContextStats {
-    ContextStats(tokens: 1, cacheHit: hit, requestedAt: now.addingTimeInterval(-age), ttl: 3600)
+func session(_ status: String, since: TimeInterval, lastWrite: TimeInterval? = nil) -> AgentSession {
+    var a = AgentSession(pid: 1, name: status, cwd: "", status: status, sessionId: "s",
+                         statusSince: now.addingTimeInterval(-since), waitingFor: nil)
+    a.lastWriteAt = lastWrite.map { now.addingTimeInterval(-$0) }
+    return a
 }
-check("warm, far from expiry", formatCache(stats(age: 60), now: now), "97%")
-check("warm, near expiry", formatCache(stats(age: 3600 - 8 * 60 - 30), now: now), "97% · 8m")
-check("expired", formatCache(stats(age: 3601), now: now), "cold")
+let snap = AgentSnapshot(sessions: [session("waiting", since: 60), session("idle", since: 9),
+                                    session("waiting", since: 3600), session("busy", since: 5)])
+check("longest wait listed first", snap.waiting.map { Int(now.timeIntervalSince($0.statusSince!)) }, [3600, 60])
+check("idle excludes busy and waiting", snap.idle.count, 1)
+check("badge counts waiting", waitingBadge(snap), "\u{2691}2")
+check("no badge when nothing waits", waitingBadge(AgentSnapshot(sessions: [session("busy", since: 1)])), nil)
+check("busy and quiet past threshold is silent",
+      session("busy", since: 900, lastWrite: 700).silence(at: now).map(Int.init), 700)
+check("busy and writing is not silent", session("busy", since: 900, lastWrite: 30).silence(at: now) == nil, true)
+check("idle is never silent", session("idle", since: 900, lastWrite: 900).silence(at: now) == nil, true)
+
+// Formatting
+check("duration <1m", formatDuration(59), "<1m")
+check("duration m", formatDuration(32 * 60), "32m")
+check("duration h m", formatDuration(3 * 3600 + 24 * 60), "3h 24m")
+check("duration d h", formatDuration(2 * 86400 + 4 * 3600), "2d 4h")
 check("tokens k", formatTokens(313_300), "313k")
 check("tokens M", formatTokens(1_250_000), "1.2M")
 check("tokens small", formatTokens(512), "512")
+
+// Pace
+let reset = now.addingTimeInterval(2 * 3600)
+func tracker(_ points: [(minsAgo: Double, pct: Double)], resetsAt: Date = reset) -> PaceTracker {
+    let t = PaceTracker()
+    for p in points { t.record(pct: p.pct, resetsAt: resetsAt, at: now.addingTimeInterval(-p.minsAgo * 60)) }
+    return t
+}
+check("too little history", tracker([(10, 20), (5, 22), (0, 24)]).forecast(now: now), .measuring)
+check("too few readings", tracker([(20, 20), (0, 24)]).forecast(now: now), .measuring)
+// 1 point per minute from 40% now: 100% in 60 minutes, before the 2h reset.
+check("full before reset", tracker([(30, 10), (15, 25), (0, 40)]).forecast(now: now),
+      .full(at: now.addingTimeInterval(60 * 60)))
+// 0.1 point per minute: +12 over the remaining 120 minutes.
+check("on pace", tracker([(30, 37), (15, 38.5), (0, 40)]).forecast(now: now), .onPace(atReset: 52))
+check("flat usage stays put", tracker([(30, 40), (15, 40), (0, 40)]).forecast(now: now), .onPace(atReset: 40))
+let rolled = tracker([(50, 80), (40, 90), (30, 95)])
+rolled.record(pct: 2, resetsAt: now.addingTimeInterval(5 * 3600), at: now)
+check("new window drops old readings", rolled.forecast(now: now), .measuring)
+let jitter = tracker([(30, 10), (15, 25)])
+jitter.record(pct: 40, resetsAt: reset.addingTimeInterval(1), at: now)
+check("reset jitter is the same window", jitter.forecast(now: now), .full(at: now.addingTimeInterval(60 * 60)))
 
 exit(failed ? 1 : 0)

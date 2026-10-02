@@ -70,7 +70,7 @@ because it forces the entire menu bar to re-measure — 2.93% CPU at just 2 fps,
 
 When anything is working, the menu bar gains a suffix: `· 2 busy` for top-level
 sessions, `· 2 busy (+3)` when subagents are also in flight. When nothing is
-running it disappears, and a notification fires on that busy -> idle edge.
+running it disappears.
 
 Each session is labelled with its Conductor chat title ("Claude usage tracker
 Mac") rather than Claude Code's derived name ("worcester-a6"), joined on
@@ -86,24 +86,37 @@ finishes when a `tool_result` quotes its id. A background agent gets that
 `tool_result` immediately (marked `toolUseResult.isAsync`), so for those the
 finish is the later `<task-notification>` carrying `<tool-use-id>`.
 
-## Context size and cache
+## Control panel
 
-Each session row also shows how big its context is and whether its prompt cache
-is still warm, read from the last API request in its transcript:
+The dropdown is arranged around what needs you, not around every session:
 
 ```
-● Claude usage app review     172k   99%        busy
-◐ knowledge-graph-le…         313k   96% · 8m   waiting
-○ conductor-11                 72k   cold       idle
+5-hour       █·········  13%   resets 4h 2m
+             ↳ full by 3:40 PM, resets 4:10 PM
+NEEDS YOU
+◐ knowledge-graph-le…   waiting 3h 32m          dialog open
+WORKING
+● Repo UI Improvement   busy 32m        488k    ⚠ silent 14m
+2 idle ▸
 ```
 
-- **Size** is everything sent as input on that request (cache reads + writes +
-  uncached). Orange from 200k, red from 500k — the cue to compact, clear or hand
-  off before every turn is re-reading a huge context.
-- **Cache %** is the share of that request served from cache. A low number on a
-  warm session means something dropped the cache. Within 15 minutes of expiry it
-  gains a countdown; past the TTL (1h or 5m, taken from the request's cache
-  write) it reads `cold`, and the next message re-sends the whole context.
+- **Needs you.** Sessions whose registry `status` is `waiting` (a permission
+  dialog or question), longest wait first, with `waitingFor` alongside. The menu
+  bar gains a `⚑N` prefix, and a notification fires once a wait passes a minute
+  — an agent blocked on a dialog makes no progress, and nothing else says so
+  when its window is not in front. Clicking a Conductor session's row or the
+  notification brings Conductor forward.
+- **Pace.** Live readings of the 5-hour window are kept for an hour and fitted
+  with a line: `full by <time>` when that line crosses 100% before the reset,
+  otherwise `on pace — ~N% at reset`. It needs 15 minutes of readings in the
+  current window first, since they arrive every 5 minutes in whole-percent steps.
+  This is your real plan limit, so it includes claude.ai and other machines.
+- **Working.** How long each busy turn has run. Context size appears only from
+  200k (orange) and 500k (red): auto-compact fires near the full window, so a
+  session can sit at several hundred k for hours. `⚠ silent` flags a busy
+  session whose transcript and subagent transcripts have not been written for
+  10 minutes — usually a hung tool or MCP call, sometimes a long command.
+- **Idle** sessions fold into a submenu.
 
 Transcripts are read incrementally — each pass reads only bytes appended since
 the last — on a background queue. The first pass over a 40 MB transcript takes
@@ -111,8 +124,8 @@ about a second; after that it is a few KB a minute. All of it is local file
 reads, no API requests, so it costs nothing against the rate limit.
 
 ```bash
-ClaudeUsage --agents   # sessions with size, cache, status and subagent counts
-./test.sh              # unit-test the transcript reader against fixtures
+ClaudeUsage --agents   # session rows as the dropdown shows them
+./test.sh              # unit-test the reader, session model and pace forecast
 ```
 
 ## Todo - future
