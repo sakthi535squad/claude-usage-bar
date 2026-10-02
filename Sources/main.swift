@@ -366,7 +366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .size(withAttributes: [.font: Self.barFont]).width
         // Centre it inside the blank run rather than at the run's leading edge,
         // which is what made it sit on top of the count.
-        let suffixStart = button.bounds.width - suffixWidth
+        // The title is inset inside the button; measuring from the button's right
+        // edge ignores that padding and lands the spinner on top of the count.
+        let titleWidth = button.attributedTitle.size().width
+        let inset = max(0, (button.bounds.width - titleWidth) / 2)
+        let suffixStart = inset + (titleWidth - suffixWidth)
         let x = suffixStart + (gap - size) / 2
         spinner.frame = NSRect(x: x, y: (button.bounds.height - size) / 2,
                                width: size, height: size)
