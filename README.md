@@ -81,13 +81,38 @@ Counts come from two places. Top-level sessions are registered by Claude Code at
 `~/.claude/sessions/<pid>.json` with a `status` of `busy`/`idle`/`waiting`; each
 entry is confirmed with `kill(pid, 0)` since the file outlives a crash.
 Subagents run in-process and have no pid, so they are counted from the parent's
-transcript: an `Agent` tool_use is pending until a `tool_result` quotes its id.
-All of it is local file reads — no API requests, so it costs nothing against the
-rate limit and rides the existing 60s display tick.
+transcript: an `Agent` tool_use is pending until it finishes. A foreground agent
+finishes when a `tool_result` quotes its id. A background agent gets that
+`tool_result` immediately (marked `toolUseResult.isAsync`), so for those the
+finish is the later `<task-notification>` carrying `<tool-use-id>`.
+
+## Context size and cache
+
+Each session row also shows how big its context is and whether its prompt cache
+is still warm, read from the last API request in its transcript:
+
+```
+● Claude usage app review     172k   99%        busy
+◐ knowledge-graph-le…         313k   96% · 8m   waiting
+○ conductor-11                 72k   cold       idle
+```
+
+- **Size** is everything sent as input on that request (cache reads + writes +
+  uncached). Orange from 200k, red from 500k — the cue to compact, clear or hand
+  off before every turn is re-reading a huge context.
+- **Cache %** is the share of that request served from cache. A low number on a
+  warm session means something dropped the cache. Within 15 minutes of expiry it
+  gains a countdown; past the TTL (1h or 5m, taken from the request's cache
+  write) it reads `cold`, and the next message re-sends the whole context.
+
+Transcripts are read incrementally — each pass reads only bytes appended since
+the last — on a background queue. The first pass over a 40 MB transcript takes
+about a second; after that it is a few KB a minute. All of it is local file
+reads, no API requests, so it costs nothing against the rate limit.
 
 ```bash
-ClaudeUsage --agents   # list sessions, statuses and subagent counts
-./test.sh              # unit-test the transcript parser against fixtures
+ClaudeUsage --agents   # sessions with size, cache, status and subagent counts
+./test.sh              # unit-test the transcript reader against fixtures
 ```
 
 ## Todo - future

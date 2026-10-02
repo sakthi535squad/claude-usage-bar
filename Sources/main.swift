@@ -210,6 +210,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var displayTimer: Timer?
     var agents = AgentSnapshot(sessions: [])
+    /// Scans read files and spawn git, so they stay off the main thread. Serial,
+    /// because the scanner's read offsets are not safe to share.
+    let scanner = SessionScanner()
+    let scanQueue = DispatchQueue(label: "claude-usage.scan", qos: .utility)
     static let spinnerSize: CGFloat = 12
     let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: spinnerSize, height: spinnerSize))
     /// Used to fire only on the busy -> nothing-running edge, not every tick.
@@ -258,7 +262,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let display = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.refreshAgents()
-            self?.render()
         }
         display.tolerance = 15
         displayTimer = display
@@ -332,7 +335,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func render() {
         guard let u = usage, u.binding != nil else {
-            setTitle("Claude ⚠", pct: 0, dimmed: true)
+            // The first agent scan can land before the first fetch; keep the
+            // loading placeholder until a fetch has actually failed.
+            if usage != nil || lastError != nil {
+                setTitle("Claude ⚠", pct: 0, dimmed: true)
+            }
+            // Without this the reason (no token, 401, 429) never reaches the menu.
+            rebuildMenu()
             return
         }
         renderTitle()
@@ -430,33 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if agents.sessions.isEmpty {
             menu.addItem(disabled("No Claude Code sessions running"))
         } else {
+            let now = Date()
             for a in agents.sessions {
-                // Shape carries the status as well as colour, so the rows stay
-                // readable without relying on colour alone.
-                let (dot, tint): (String, NSColor) = {
-                    switch a.status {
-                    case "busy":    return ("\u{25CF}", .systemGreen)
-                    case "waiting": return ("\u{25D0}", .systemOrange)
-                    default:        return ("\u{25CB}", .tertiaryLabelColor)
-                    }
-                }()
-
-                var line = "\(dot) \(pad(a.label, 36))\(pad(a.status, 8))"
-                if a.subagents > 0 { line += "+\(a.subagents) sub" }
-
-                let attributed = NSMutableAttributedString(string: line, attributes: [
-                    .font: mono2,
-                    .foregroundColor: a.isBusy ? NSColor.labelColor : NSColor.secondaryLabelColor,
-                ])
-                // Tint only the dot and the status word; the title stays neutral.
-                attributed.addAttribute(.foregroundColor, value: tint,
-                                        range: NSRange(location: 0, length: 1))
-                if let r = line.range(of: a.status, options: .backwards) {
-                    attributed.addAttribute(.foregroundColor, value: tint,
-                                            range: NSRange(r, in: line))
-                }
                 let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = attributed
+                mi.attributedTitle = sessionRow(a, font: mono2, now: now)
                 menu.addItem(mi)
             }
 
@@ -501,20 +487,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refreshAgents() {
-        let snapshot = agentSnapshot()
-        let running = snapshot.anyRunning
-        // Only announce the transition, and only after having seen work in flight.
-        if wasRunning, !running { notifyAllStopped() }
-        wasRunning = running
-        agents = snapshot
+        scanQueue.async { [weak self] in
+            guard let self else { return }
+            let snapshot = self.scanner.snapshot()
+            DispatchQueue.main.async {
+                let running = snapshot.anyRunning
+                // Only announce the transition, and only after having seen work in flight.
+                if self.wasRunning, !running { self.notifyAllStopped(snapshot) }
+                self.wasRunning = running
+                self.agents = snapshot
+                self.render()
+            }
+        }
     }
 
-    func notifyAllStopped() {
+    func notifyAllStopped(_ snapshot: AgentSnapshot) {
         let content = UNMutableNotificationContent()
         content.title = "All agents stopped"
-        content.body = agents.sessions.isEmpty
+        content.body = snapshot.sessions.isEmpty
             ? "No Claude Code sessions running."
-            : "\(agents.sessions.count) session(s) idle — nothing in flight."
+            : "\(snapshot.sessions.count) session(s) idle — nothing in flight."
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString,
                                   content: content, trigger: nil))
@@ -538,6 +530,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// One dropdown row: status dot, label, context size, cache state, status.
+/// Shape carries the status as well as colour, so rows stay readable without
+/// relying on colour alone.
+func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedString {
+    let (dot, tint): (String, NSColor) = {
+        switch a.status {
+        case "busy":    return ("\u{25CF}", .systemGreen)
+        case "waiting": return ("\u{25D0}", .systemOrange)
+        default:        return ("\u{25CB}", .tertiaryLabelColor)
+        }
+    }()
+    let base: NSColor = a.isBusy ? .labelColor : .secondaryLabelColor
+
+    let sizeColor: NSColor = {
+        guard let c = a.context else { return base }
+        if c.tokens >= contextAlertTokens { return .systemRed }
+        if c.tokens >= contextWarnTokens { return .systemOrange }
+        return base
+    }()
+    let cacheColor: NSColor = {
+        guard let c = a.context else { return base }
+        if c.isCold(at: now) { return .tertiaryLabelColor }
+        if c.expiresAt.timeIntervalSince(now) <= cacheExpiryWarn { return .systemOrange }
+        // A low hit on a warm session means something dropped the cache.
+        if c.cacheHit < 0.5 { return .systemOrange }
+        return base
+    }()
+
+    let out = NSMutableAttributedString()
+    func add(_ s: String, _ color: NSColor) {
+        out.append(NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color]))
+    }
+    add("\(dot) ", tint)
+    add(pad(a.label, 36), base)
+    add(pad(a.context.map { formatTokens($0.tokens) } ?? "—", 7), sizeColor)
+    add(pad(a.context.map { formatCache($0, now: now) } ?? "—", 11), cacheColor)
+    add(pad(a.status, 8), tint)
+    if a.subagents > 0 { add("+\(a.subagents) sub", base) }
+    return out
+}
+
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
 
@@ -552,13 +585,16 @@ extension AppDelegate: NSMenuDelegate {
 // `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
 // bar itself is invisible to screencapture, so this is how the data path is checked.
 if CommandLine.arguments.contains("--agents") {
-    let snap = agentSnapshot()
+    let snap = SessionScanner().snapshot()
     if snap.sessions.isEmpty {
         print("No Claude Code sessions running")
     } else {
         for a in snap.sessions {
-            print(String(format: "%@ %@ %@ subagents=%d",
-                         pad(String(a.pid), 8), pad(a.label, 36), pad(a.status, 9), a.subagents))
+            let size = a.context.map { formatTokens($0.tokens) } ?? "—"
+            let cache = a.context.map { formatCache($0) } ?? "—"
+            print(String(format: "%@ %@ %@ %@ %@ subagents=%d",
+                         pad(String(a.pid), 8), pad(a.label, 36), pad(size, 6),
+                         pad(cache, 10), pad(a.status, 9), a.subagents))
         }
         print("---")
         print("agents=\(snap.sessions.count) busy=\(snap.busyCount) subagents=\(snap.subagentCount)")
@@ -587,7 +623,7 @@ if CommandLine.arguments.contains("--dump") {
     if let e = err { print("live fetch failed: \(e)") }
     guard let u = result else { print("no usage available"); exit(1) }
     var barText = titleText(u)
-    if let suffix = agentSuffix(agentSnapshot()) { barText += "  " + suffix }
+    if let suffix = agentSuffix(SessionScanner().snapshot()) { barText += "  " + suffix }
     print("menu bar: \(barText)")
     for w in u.windows {
         print(String(format: "  %@ %@ %3d%%   resets %@", pad(w.label, 12),
