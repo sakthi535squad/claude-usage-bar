@@ -104,7 +104,7 @@ WORKING
   dialog or question), longest wait first, with `waitingFor` alongside. The menu
   bar gains a `⚑N` prefix, and a notification fires once a wait passes a minute
   — an agent blocked on a dialog makes no progress, and nothing else says so
-  when its window is not in front. Clicking a Conductor session's row or the
+  when its window is not in front. Clicking the
   notification brings Conductor forward.
 - **Pace.** Live readings of the 5-hour window are kept for an hour and fitted
   with a line: `full by <time>` when that line crosses 100% before the reset,
@@ -116,7 +116,50 @@ WORKING
   session can sit at several hundred k for hours. `⚠ silent` flags a busy
   session whose transcript and subagent transcripts have not been written for
   10 minutes — usually a hung tool or MCP call, sometimes a long command.
-- **Idle** sessions fold into a submenu.
+- **Cache.** Idle and waiting rows show the last request's cache hit and how
+  long until its prompt cache lapses (`97% 42m`), or `cold`. The TTL (1h or 5m)
+  comes from the request's cache write. Busy rows omit it; they refresh their
+  own cache every turn.
+- **Kept warm** sessions are pinned ones (`↻`); other idle sessions fold into a
+  submenu.
+
+Clicking any session row opens its submenu: **Keep Cache Warm** and, for
+Conductor sessions, **Open in Conductor**.
+
+## Keep warm
+
+A pinned session gets a ping when 10 minutes are left on a 1h cache (2 minutes
+on a 5m one). The ping replays the session's cached prefix, which resets the TTL,
+so the next real turn reads its context at cache-read prices instead of
+rewriting all of it. On a 1h cache, rewriting costs 2× the input price and a
+read costs 0.1×, so one avoided cold turn pays for about 20 pings, roughly 17
+hours of pinning.
+
+The ping is `claude -p --resume <id> --fork-session --no-session-persistence`,
+launched with the live process's own executable, argv and environment (read
+with `KERN_PROCARGS2`). Claude Code records the system prompt on the first
+request and resume re-sends that record, so with the same model, thinking,
+effort, tools and setting sources the prefix is byte-identical. Measured: 63.7k
+of a 64k context read back from cache, and 173k of 170k. Only I/O, identity
+and permission flags are dropped. Default permissions deny any tool call,
+hooks are off, and `--max-turns 1` caps it. Nothing is written to the
+session's transcript.
+
+Guards:
+- **Cold sessions are left alone.** Re-warming one costs the full rewrite the
+  next real turn would pay anyway.
+- **A ping that misses gets unpinned.** If it reads less than 90% of the
+  session's last context from cache, it warmed a different prefix, and repeating
+  it would pay write prices every time.
+- **Pins expire** after 8 hours or when the session ends.
+- **Pings pause** while the 5-hour window is at 90% or more.
+- Every ping is logged to `~/.config/claude-usage-bar/keepwarm.log`, with its
+  token counts and list-price cost. Pins are stored in `pins.json` next to it.
+
+```bash
+ClaudeUsage --ping <pid> --dry-run   # the exact command a ping would run
+ClaudeUsage --ping <pid>             # one real ping; exit 2 if it missed the cache
+```
 
 Transcripts are read incrementally — each pass reads only bytes appended since
 the last — on a background queue. The first pass over a 40 MB transcript takes

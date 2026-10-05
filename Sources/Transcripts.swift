@@ -7,6 +7,26 @@ final class TranscriptState {
     fileprivate(set) var pendingAgents = Set<String>()
     /// Input sent on the most recent API request: cache reads + writes + uncached.
     fileprivate(set) var contextTokens: Int?
+    /// Share of that input served from cache.
+    fileprivate(set) var cacheHit: Double?
+    fileprivate(set) var lastRequestAt: Date?
+    /// Taken from the newest cache write. A request that wrote nothing keeps the
+    /// previous value, since reads refresh an entry at its original TTL.
+    fileprivate(set) var cacheTTL: TimeInterval?
+}
+
+private let timestampFormatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+/// TTL implied by a usage block's cache write, or nil when it wrote nothing.
+func cacheTTL(from usage: [String: Any]) -> TimeInterval? {
+    guard let c = usage["cache_creation"] as? [String: Any] else { return nil }
+    if (c["ephemeral_1h_input_tokens"] as? Int ?? 0) > 0 { return 3600 }
+    if (c["ephemeral_5m_input_tokens"] as? Int ?? 0) > 0 { return 300 }
+    return nil
 }
 
 private let newline = UInt8(ascii: "\n")
@@ -95,7 +115,14 @@ final class TranscriptReader {
             let total = ["cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens"]
                 .reduce(0) { $0 + (usage[$1] as? Int ?? 0) }
             // Synthetic entries (interrupts, local errors) carry all-zero usage.
-            if total > 0 { state.contextTokens = total }
+            if total > 0 {
+                state.contextTokens = total
+                state.cacheHit = Double(usage["cache_read_input_tokens"] as? Int ?? 0) / Double(total)
+                if let ts = root["timestamp"] as? String, let at = timestampFormatter.date(from: ts) {
+                    state.lastRequestAt = at
+                }
+                if let ttl = cacheTTL(from: usage) { state.cacheTTL = ttl }
+            }
         }
     }
 }

@@ -22,6 +22,9 @@ struct AgentSession {
     let waitingFor: String?
     var subagents: Int = 0
     var contextTokens: Int?
+    var cacheHit: Double?
+    var lastRequestAt: Date?
+    var cacheTTL: TimeInterval?
     /// Newest write to the session's transcript or any of its subagents'.
     var lastWriteAt: Date?
     /// Conductor chat title if there is one, else branch, else the derived name.
@@ -148,6 +151,9 @@ final class SessionScanner {
                 watched.insert(path)
                 sessions[i].subagents = state.pendingAgents.count
                 sessions[i].contextTokens = state.contextTokens
+                sessions[i].cacheHit = state.cacheHit
+                sessions[i].lastRequestAt = state.lastRequestAt
+                sessions[i].cacheTTL = state.cacheTTL
                 sessions[i].lastWriteAt = lastWrite(transcript: path)
             }
             if let title = titles[sessions[i].sessionId] {

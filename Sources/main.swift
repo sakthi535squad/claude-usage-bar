@@ -230,6 +230,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set when the usage endpoint returns 429. Polling past a rate limit only
     /// deepens it, so scheduled refreshes are skipped until this passes.
     var backoffUntil: Date?
+    let pins = PinStore()
+    /// Sessions with a ping in flight, so a slow one is not launched twice.
+    var pinging = Set<String>()
+    /// Last keep-warm outcome per session, shown in its submenu.
+    var pinNotes: [String: String] = [:]
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
@@ -460,7 +465,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(disabled("WORKING"))
             for a in agents.busy { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
         }
-        let idle = agents.idle
+        let warm = agents.idle.filter { pins.isPinned($0.sessionId) }
+        if !warm.isEmpty {
+            menu.addItem(disabled("KEPT WARM"))
+            for a in warm { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
+        }
+        let idle = agents.idle.filter { !pins.isPinned($0.sessionId) }
         if !idle.isEmpty {
             // Idle sessions need nothing from you, so they fold away.
             let fold = NSMenuItem(title: "\(idle.count) idle", action: nil, keyEquivalent: "")
@@ -511,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.notifyWaits(snapshot)
                 self.agents = snapshot
+                self.keepWarm(snapshot)
                 self.render()
             }
         }
@@ -540,11 +551,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func sessionItem(_ a: AgentSession, font: NSFont, now: Date) -> NSMenuItem {
-        let mi = NSMenuItem(title: "", action: a.fromConductor ? #selector(openConductor) : nil,
-                            keyEquivalent: "")
-        mi.target = self
-        mi.attributedTitle = sessionRow(a, font: font, now: now)
+        let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        mi.attributedTitle = sessionRow(a, font: font, now: now, pin: pins.pins[a.sessionId])
+
+        let sub = NSMenu()
+        let toggle = NSMenuItem(title: "Keep Cache Warm", action: #selector(togglePin(_:)), keyEquivalent: "")
+        toggle.target = self
+        toggle.representedObject = a.sessionId
+        toggle.state = pins.isPinned(a.sessionId) ? .on : .off
+        sub.addItem(toggle)
+        if let note = pinNotes[a.sessionId] { sub.addItem(disabled(note)) }
+        if a.fromConductor {
+            sub.addItem(.separator())
+            let open = NSMenuItem(title: "Open in Conductor", action: #selector(openConductor), keyEquivalent: "")
+            open.target = self
+            sub.addItem(open)
+        }
+        mi.submenu = sub
         return mi
+    }
+
+    @objc func togglePin(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        pins.toggle(id)
+        pinNotes[id] = nil
+        keepWarm(agents)
+        rebuildMenu()
+    }
+
+    /// Pings every pinned, idle session whose cache is about to lapse. Runs on
+    /// the 60s scan tick; the ping itself is a forked, unpersisted `claude -p`.
+    func keepWarm(_ snapshot: AgentSnapshot) {
+        pins.prune(live: Set(snapshot.sessions.map(\.sessionId)))
+        if let five = usage?.windows.first(where: { $0.key == "five_hour" }),
+           five.utilization >= keepWarmPauseAbovePct {
+            for id in pins.pins.keys { pinNotes[id] = "Paused: 5-hour window at \(Int(five.utilization))%" }
+            return
+        }
+        let now = Date()
+        for a in snapshot.sessions {
+            guard let pin = pins.pins[a.sessionId], !pinging.contains(a.sessionId),
+                  pingDue(a, pin: pin, now: now) else { continue }
+            pinging.insert(a.sessionId)
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let sentAt = Date()
+                let result = runPing(a)
+                logPing(a.label, sessionId: a.sessionId, result, at: sentAt)
+                DispatchQueue.main.async { self?.finishPing(a, result, sentAt: sentAt) }
+            }
+        }
+    }
+
+    func finishPing(_ a: AgentSession, _ result: Result<PingResult, PingError>, sentAt: Date) {
+        pinging.remove(a.sessionId)
+        let clock = DateFormatter()
+        clock.timeStyle = .short
+        switch result {
+        case .success(let r):
+            let context = a.contextTokens ?? 0
+            if Double(r.cacheRead) < pingMinCacheRead * Double(context) {
+                // The ping warmed some other prefix; repeating it would only pay
+                // write prices again each time without helping the session.
+                pins.remove(a.sessionId)
+                pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache"
+            } else {
+                pins.recordPing(a.sessionId, at: sentAt)
+                pinNotes[a.sessionId] = "Pinged \(clock.string(from: sentAt)) · \(formatTokens(r.cacheRead)) cached"
+            }
+        case .failure(let e):
+            pinNotes[a.sessionId] = "Ping failed \(clock.string(from: sentAt)): \(e)"
+        }
+        rebuildMenu()
     }
 
     func paceItem(_ f: PaceForecast, resetsAt: Date?, font: NSFont) -> NSMenuItem {
@@ -598,7 +675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// only the warnings that ask for action (big context, silence, what it waits on).
 /// Shape carries the status as well as colour, so rows stay readable without
 /// relying on colour alone.
-func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedString {
+func sessionRow(_ a: AgentSession, font: NSFont, now: Date, pin: Pin? = nil) -> NSAttributedString {
     let (dot, tint): (String, NSColor) = {
         switch a.status {
         case "busy":    return ("\u{25CF}", .systemGreen)
@@ -617,6 +694,22 @@ func sessionRow(_ a: AgentSession, font: NSFont, now: Date) -> NSAttributedStrin
 
     let since = a.statusSince.map { " " + formatDuration(now.timeIntervalSince($0)) } ?? ""
     add(pad(a.status + since, 16), a.isWaiting ? .systemOrange : base)
+
+    // A busy session keeps its own cache warm, so only idle and waiting rows say.
+    let mark = pin != nil ? "\u{21BB} " : "  "
+    if !a.isBusy, let c = cacheState(a, pin: pin) {
+        let left = c.remaining(at: now)
+        if left > 0 {
+            let hit = c.hit.map { "\(Int(($0 * 100).rounded()))% " } ?? ""
+            // A low hit on a warm session means something rewrote the prefix.
+            let tint: NSColor = (c.hit ?? 1) < 0.8 ? .systemOrange : (pin != nil ? .labelColor : .secondaryLabelColor)
+            add(pad(mark + hit + formatDuration(left), 12), tint)
+        } else {
+            add(pad(mark + "cold", 12), .tertiaryLabelColor)
+        }
+    } else {
+        add(pad(pin != nil ? mark : "", 12), base)
+    }
 
     if let tokens = a.contextTokens, tokens >= contextWarnTokens {
         add(pad(formatTokens(tokens), 7), tokens >= contextAlertTokens ? .systemRed : .systemOrange)
@@ -661,17 +754,42 @@ extension AppDelegate: NSMenuDelegate {
 // bar itself is invisible to screencapture, so this is how the data path is checked.
 if CommandLine.arguments.contains("--agents") {
     let snap = SessionScanner().snapshot()
+    let pins = PinStore()
     if snap.sessions.isEmpty {
         print("No Claude Code sessions running")
     } else {
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         for a in snap.waiting + snap.busy + snap.idle {
-            print(pad(String(a.pid), 7) + sessionRow(a, font: font, now: Date()).string)
+            print(pad(String(a.pid), 7) + sessionRow(a, font: font, now: Date(), pin: pins.pins[a.sessionId]).string)
         }
         print("---")
         print("waiting=\(snap.waiting.count) busy=\(snap.busyCount) idle=\(snap.idle.count) subagents=\(snap.subagentCount)")
     }
     exit(0)
+}
+
+// `ClaudeUsage --ping <pid> [--dry-run]` runs one keep-warm ping through the same
+// path the app uses, or prints the command it would run.
+if let i = CommandLine.arguments.firstIndex(of: "--ping") {
+    let args = CommandLine.arguments
+    guard i + 1 < args.count, let pid = pid_t(args[i + 1]),
+          let a = SessionScanner().snapshot().sessions.first(where: { $0.pid == pid }) else {
+        print("usage: --ping <pid of a live session>  (see --agents)"); exit(1)
+    }
+    if args.contains("--dry-run") {
+        guard let launch = processLaunch(pid) else { print("cannot read process \(pid)"); exit(1) }
+        print(([launch.exe] + pingArguments(from: Array(launch.args.dropFirst()), sessionId: a.sessionId))
+            .map { "'" + $0.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }.joined(separator: " "))
+        exit(0)
+    }
+    let context = a.contextTokens ?? 0
+    switch runPing(a) {
+    case .success(let r):
+        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input), cost \(r.costUSD.map { String(format: "$%.4f", $0) } ?? "?")")
+        exit(Double(r.cacheRead) >= pingMinCacheRead * Double(context) ? 0 : 2)
+    case .failure(let e):
+        print("ping failed: \(e)"); exit(1)
+    }
 }
 
 if CommandLine.arguments.contains("--dump") {

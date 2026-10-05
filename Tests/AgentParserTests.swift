@@ -129,4 +129,81 @@ let jitter = tracker([(30, 10), (15, 25)])
 jitter.record(pct: 40, resetsAt: reset.addingTimeInterval(1), at: now)
 check("reset jitter is the same window", jitter.forecast(now: now), .full(at: now.addingTimeInterval(60 * 60)))
 
+// Cache state from the transcript
+let ts = "2026-10-05T23:20:38.013Z"
+let warmLine = #"{"type":"assistant","timestamp":"\#(ts)","message":{"id":"m1","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_read_input_tokens":63277,"cache_creation_input_tokens":443,"cache_creation":{"ephemeral_1h_input_tokens":443,"ephemeral_5m_input_tokens":0}}}}"#
+let readOnlyLine = #"{"type":"assistant","timestamp":"2026-10-05T23:30:00.000Z","message":{"id":"m2","role":"assistant","content":[],"usage":{"input_tokens":2,"cache_read_input_tokens":63720,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0}}}}"#
+write([warmLine])
+let cs = TranscriptReader().update(path: fixture)
+check("1h TTL from cache write", cs?.cacheTTL, 3600)
+check("cache hit share", cs.flatMap { $0.cacheHit.map { Int(($0 * 1000).rounded()) } }, 993)
+check("request time from timestamp", cs?.lastRequestAt.map { Int($0.timeIntervalSince1970) }, 1791242438)
+write([warmLine, readOnlyLine])
+check("read-only request keeps prior TTL", TranscriptReader().update(path: fixture)?.cacheTTL, 3600)
+check("5m TTL", cacheTTL(from: ["cache_creation": ["ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 0]]), 300)
+
+// Keep-warm scheduling
+func idle(requestAgo: TimeInterval, ttl: TimeInterval = 3600, status: String = "idle") -> AgentSession {
+    var a = session(status, since: requestAgo)
+    a.lastRequestAt = now.addingTimeInterval(-requestAgo)
+    a.cacheTTL = ttl
+    a.cacheHit = 0.97
+    return a
+}
+let pin = Pin(sessionId: "s", pinnedAt: now.addingTimeInterval(-7200))
+check("fresh cache is not due", pingDue(idle(requestAgo: 20 * 60), pin: pin, now: now), false)
+check("inside the lead is due", pingDue(idle(requestAgo: 52 * 60), pin: pin, now: now), true)
+check("cold is never pinged", pingDue(idle(requestAgo: 61 * 60), pin: pin, now: now), false)
+check("busy is never pinged", pingDue(idle(requestAgo: 52 * 60, status: "busy"), pin: pin, now: now), false)
+check("waiting can be pinged", pingDue(idle(requestAgo: 52 * 60, status: "waiting"), pin: pin, now: now), true)
+check("5m TTL due at 3.5m", pingDue(idle(requestAgo: 210, ttl: 300), pin: pin, now: now), true)
+var pinged = pin
+pinged.lastPingAt = now.addingTimeInterval(-5 * 60)
+check("recent ping resets the clock", pingDue(idle(requestAgo: 52 * 60), pin: pinged, now: now), false)
+check("ping extends remaining TTL",
+      cacheState(idle(requestAgo: 52 * 60), pin: pinged).map { Int($0.remaining(at: now)) }, 55 * 60)
+
+// Pin store
+let pinPath = "/tmp/agent-fixture-pins.json"
+try? FileManager.default.removeItem(atPath: pinPath)
+let store = PinStore(path: pinPath)
+store.toggle("a", now: now)
+store.toggle("b", now: now.addingTimeInterval(-9 * 3600))
+store.recordPing("a", at: now)
+check("pins persist", PinStore(path: pinPath).pins.keys.sorted(), ["a", "b"])
+check("ping time persists", PinStore(path: pinPath).pins["a"]?.lastPingAt.map { Int($0.timeIntervalSince1970) },
+      Int(now.timeIntervalSince1970))
+store.prune(live: ["a", "b"], now: now)
+check("old pin expires", store.pins.keys.sorted(), ["a"])
+store.prune(live: [], now: now)
+check("ended session unpins", store.pins.isEmpty, true)
+store.toggle("c", now: now)
+store.toggle("c", now: now)
+check("toggle twice unpins", PinStore(path: pinPath).pins.isEmpty, true)
+
+// Ping command
+let conductorArgs = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
+                     "--thinking", "adaptive", "--effort", "medium", "--max-turns", "1000",
+                     "--model", "claude-opus-5-5[1m]", "--permission-prompt-tool", "stdio",
+                     "--resume=old-id", "--session-mirror", "--disallowedTools", "AskUserQuestion",
+                     "--setting-sources=user,project,local", "--permission-mode", "bypassPermissions",
+                     "--session-id", "x"]
+let built = pingArguments(from: conductorArgs, sessionId: "sid")
+check("keeps prefix-shaping flags", Array(built.prefix(9)),
+      ["--thinking", "adaptive", "--effort", "medium", "--model", "claude-opus-5-5[1m]",
+       "--disallowedTools", "AskUserQuestion", "--setting-sources=user,project,local"])
+check("drops I/O, identity and permission flags",
+      built.contains { ["stream-json", "--verbose", "stdio", "--resume=old-id", "bypassPermissions", "x", "1000", "--session-mirror"].contains($0) }, false)
+check("resumes the registry session, forked and unpersisted",
+      built.contains("sid") && built.contains("--fork-session") && built.contains("--no-session-persistence"), true)
+
+let okOut = Data(#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.0274,"usage":{"input_tokens":2,"cache_read_input_tokens":63720,"cache_creation_input_tokens":1825}}"#.utf8)
+if case .success(let r) = parsePingOutput(okOut) {
+    check("ping output parsed", [r.cacheRead, r.cacheWrite, r.input], [63720, 1825, 2])
+} else { check("ping output parsed", false, true) }
+let errOut = Data(#"{"type":"result","is_error":true,"result":"No conversation found"}"#.utf8)
+if case .failure(.failed(let msg)) = parsePingOutput(errOut) {
+    check("ping error surfaced", msg.contains("No conversation found"), true)
+} else { check("ping error surfaced", false, true) }
+
 exit(failed ? 1 : 0)
