@@ -722,8 +722,10 @@ func sessionRow(_ a: AgentSession, font: NSFont, now: Date, pin: Pin? = nil) -> 
         add(pad(pin != nil ? mark : "", 22), base)
     }
 
-    if let tokens = a.contextTokens, tokens >= contextWarnTokens {
-        add(pad(formatTokens(tokens) + " ctx", 11), tokens >= contextAlertTokens ? .systemRed : .systemOrange)
+    if let tokens = a.contextTokens {
+        let tint: NSColor = tokens >= contextAlertTokens ? .systemRed
+            : tokens >= contextWarnTokens ? .systemOrange : .secondaryLabelColor
+        add(pad(formatTokens(tokens) + " ctx", 11), tint)
     } else {
         add(pad("", 11), base)
     }
