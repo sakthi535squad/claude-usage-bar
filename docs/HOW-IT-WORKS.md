@@ -74,7 +74,7 @@ derived name.
   session whose transcript and subagent transcripts have not been written for
   10 minutes.
 - **Cache.** Idle and waiting rows show the last request's cache hit and how
-  long until its prompt cache lapses (`97% 42m`), or `cold`. The TTL (1h or 5m)
+  long until its prompt cache lapses (`97% hit · 42m warm`), or `cache cold`. The TTL (1h or 5m)
   comes from the request's cache write. Busy rows omit it; they refresh their
   own cache every turn.
 - **Kept warm** rows are pinned sessions (`↻`); other idle sessions fold into a

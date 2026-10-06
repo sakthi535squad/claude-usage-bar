@@ -711,23 +711,23 @@ func sessionRow(_ a: AgentSession, font: NSFont, now: Date, pin: Pin? = nil) -> 
     if !a.isBusy, let c = cacheState(a, pin: pin) {
         let left = c.remaining(at: now)
         if left > 0 {
-            let hit = c.hit.map { "\(Int(($0 * 100).rounded()))% " } ?? ""
+            let hit = c.hit.map { "\(Int(($0 * 100).rounded()))% hit · " } ?? ""
             // A low hit on a warm session means something rewrote the prefix.
             let tint: NSColor = (c.hit ?? 1) < 0.8 ? .systemOrange : (pin != nil ? .labelColor : .secondaryLabelColor)
-            add(pad(mark + hit + formatDuration(left), 12), tint)
+            add(pad(mark + hit + formatDuration(left) + " warm", 22), tint)
         } else {
-            add(pad(mark + "cold", 12), .tertiaryLabelColor)
+            add(pad(mark + "cache cold", 22), .tertiaryLabelColor)
         }
     } else {
-        add(pad(pin != nil ? mark : "", 12), base)
+        add(pad(pin != nil ? mark : "", 22), base)
     }
 
     if let tokens = a.contextTokens, tokens >= contextWarnTokens {
-        add(pad(formatTokens(tokens), 7), tokens >= contextAlertTokens ? .systemRed : .systemOrange)
+        add(pad(formatTokens(tokens) + " ctx", 11), tokens >= contextAlertTokens ? .systemRed : .systemOrange)
     } else {
-        add(pad("", 7), base)
+        add(pad("", 11), base)
     }
-    if a.subagents > 0 { add("+\(a.subagents) sub  ", base) }
+    if a.subagents > 0 { add("+\(a.subagents) agents  ", base) }
     if let quiet = a.silence(at: now) { add("\u{26A0} silent \(formatDuration(quiet))", .systemOrange) }
     if a.isWaiting, let why = a.waitingFor { add(why, .secondaryLabelColor) }
     return out

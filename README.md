@@ -37,7 +37,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 - **Agent counts.** Top-level sessions and background subagents (`2 busy (+3)`),
   with a spinner in the menu bar while anything runs.
 - **Prompt cache status.** Each idle session shows its last cache hit and time
-  until the cache lapses (`97% 42m`), or `cold`.
+  until the cache lapses (`97% hit · 42m warm`), or `cache cold`.
 - **Keep Cache Warm.** Pin a session and it is pinged shortly before the cache
   expires, so coming back to it costs cache-read prices, not a full rewrite.
   One avoided cold turn pays for about 20 pings.
