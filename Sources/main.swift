@@ -231,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// deepens it, so scheduled refreshes are skipped until this passes.
     var backoffUntil: Date?
     let pins = PinStore()
+    let spend = SpendLedger()
     /// Sessions with a ping in flight, so a slow one is not launched twice.
     var pinging = Set<String>()
     /// Last keep-warm outcome per session, shown in its submenu.
@@ -477,8 +478,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for a in agents.busy { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
         }
         let warm = agents.idle.filter { pins.isPinned($0.sessionId) }
-        if !warm.isEmpty {
-            menu.addItem(disabled("KEPT WARM"))
+        let today = spend.total(days: 1, now: now)
+        if !warm.isEmpty || today.pings > 0 {
+            menu.addItem(disabled(today.pings > 0 ? "KEPT WARM · today \(formatCost(today.cost))" : "KEPT WARM"))
             for a in warm { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
         }
         let idle = agents.idle.filter { !pins.isPinned($0.sessionId) }
@@ -596,6 +598,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             opt.state = keepAllWindow == w ? .on : .off
             sub.addItem(opt)
         }
+        sub.addItem(.separator())
+        sub.addItem(disabled("Keep-warm spend at list price"))
+        for (label, n) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
+            sub.addItem(disabled("\(label): \(spendSummary(spend.total(days: n)))"))
+        }
         mi.submenu = sub
         return mi
     }
@@ -655,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let sentAt = Date()
                 let result = runPing(a, pin: pin, live: live)
-                logPing(a.label, sessionId: a.sessionId, result, at: sentAt)
+                logPing(a.label, sessionId: a.sessionId, model: a.model, result, at: sentAt)
                 DispatchQueue.main.async { self?.finishPing(a, result, sentAt: sentAt) }
             }
         }
@@ -667,16 +674,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clock.timeStyle = .short
         switch result {
         case .success(let r):
+            spend.record(r, model: a.model, at: sentAt)
+            let cost = pingCost(r, model: a.model).map { " · \(formatCost($0))" } ?? ""
             let context = a.contextTokens ?? 0
             if Double(r.cacheRead) < pingMinCacheRead * Double(context) {
                 // The ping warmed some other prefix; repeating it would only pay
                 // write prices again each time without helping the session.
                 pins.remove(a.sessionId)
                 keepAllSkip.insert(a.sessionId)
-                pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache"
+                pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache\(cost)"
             } else {
                 pins.recordPing(a.sessionId, at: sentAt)
-                pinNotes[a.sessionId] = "Pinged \(clock.string(from: sentAt)) · \(formatTokens(r.cacheRead)) cached"
+                pinNotes[a.sessionId] = "Pinged \(clock.string(from: sentAt)) · \(formatTokens(r.cacheRead)) cached\(cost)"
             }
         case .failure(let e):
             pinNotes[a.sessionId] = "Ping failed \(clock.string(from: sentAt)): \(e)"
@@ -845,7 +854,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--ping") {
     let context = a.contextTokens ?? 0
     switch runPing(a, pin: nil, live: []) {
     case .success(let r):
-        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input)")
+        let cost = pingCost(r, model: a.model).map { ", cost \(formatCost($0))" } ?? ""
+        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input), output \(r.output)\(cost)")
         exit(Double(r.cacheRead) >= pingMinCacheRead * Double(context) ? 0 : 2)
     case .failure(let e):
         print("ping failed: \(e)"); exit(1)

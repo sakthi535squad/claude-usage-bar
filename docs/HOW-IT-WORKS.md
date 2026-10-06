@@ -124,6 +124,19 @@ Guards:
 - Every ping is logged to `~/.config/claude-usage-bar/keepwarm.log`, with its
   token counts and list-price cost. Pins are stored in `pins.json` next to it.
 
+### Spend
+
+Each successful ping adds its tokens and cost to a per-day total in
+`keepwarm-spend.json` (kept 30 days). The menu shows today's cost in the *Kept
+warm* header and today / 7-day / 30-day totals under **Keep All Sessions Warm**.
+
+Cost is computed from the ping's token counts at the session model's list
+price (read from its transcript): cache reads at the model's read price, cache
+writes at 1.25× input (5m) or 2× input (1h), plus input and output. The
+`total_cost_usd` that `claude -p` reports is not used. On a resumed session it
+includes everything the session had already spent. Pings on a model missing
+from the price table still count tokens, and their cost shows with a `+`.
+
 ```bash
 ClaudeUsage --ping <pid> --dry-run   # the exact command a ping would run
 ClaudeUsage --ping <pid>             # one real ping; exit 2 if it missed the cache

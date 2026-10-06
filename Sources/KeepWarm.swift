@@ -270,6 +270,10 @@ struct PingResult {
     let cacheRead: Int
     let cacheWrite: Int
     let input: Int
+    var output = 0
+    /// The part of `cacheWrite` written with a 1-hour TTL, priced at 2× input
+    /// rather than 1.25×.
+    var cacheWrite1h = 0
 }
 
 enum PingError: Error, CustomStringConvertible {
@@ -297,9 +301,12 @@ func parsePingOutput(_ data: Data) -> Result<PingResult, PingError> {
         return .failure(.failed("claude error: \((root["result"] as? String)?.prefix(200) ?? "unknown")"))
     }
     guard let u = root["usage"] as? [String: Any] else { return .failure(.failed("no usage in output")) }
+    let write1h = (u["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0
     return .success(PingResult(cacheRead: u["cache_read_input_tokens"] as? Int ?? 0,
                                cacheWrite: u["cache_creation_input_tokens"] as? Int ?? 0,
-                               input: u["input_tokens"] as? Int ?? 0))
+                               input: u["input_tokens"] as? Int ?? 0,
+                               output: u["output_tokens"] as? Int ?? 0,
+                               cacheWrite1h: write1h))
 }
 
 /// The live process's launch when it is running, else the one captured at pin
@@ -340,12 +347,13 @@ func runPing(_ a: AgentSession, pin: Pin?, live: [AgentSession]) -> Result<PingR
 }
 
 /// One line per ping, so what keep-warm spends can be audited afterwards.
-func logPing(_ label: String, sessionId: String, _ result: Result<PingResult, PingError>, at: Date) {
+func logPing(_ label: String, sessionId: String, model: String?, _ result: Result<PingResult, PingError>, at: Date) {
     let ts = ISO8601DateFormatter().string(from: at)
     let line: String
     switch result {
     case .success(let r):
-        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input)\n"
+        let cost = pingCost(r, model: model).map { " cost \(String(format: "%.4f", $0))" } ?? ""
+        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input) out \(r.output)\(cost)\n"
     case .failure(let e):
         line = "\(ts) \(sessionId.prefix(8)) \(label): FAILED \(e)\n"
     }
