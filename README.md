@@ -6,7 +6,7 @@
 ⚑1  5h 13%  7d 79%  ⟳ 2 busy (+3)
 ```
 
-![The dropdown in the Claude Code theme](docs/themes/claude.png)
+![The dropdown in the classic theme](docs/themes/classic.png)
 
 Native Swift, a single binary, no dependencies, no Xcode project. Idle CPU is
 indistinguishable from zero.
