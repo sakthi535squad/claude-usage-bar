@@ -57,7 +57,7 @@ struct HtopStyle: MenuStyle {
             let half = cols / 2 + 1
             let a = c.agents
             stat(&g, row: r, col: 1, "Sessions: ", [
-                ("\(a.sessions.count)", P.white, true), (", ", P.fg, false),
+                ("\(a.sessions.filter { $0.pid > 0 }.count)", P.white, true), (", ", P.fg, false),
                 ("\(a.busyCount) running", P.green, true),
                 (a.waiting.isEmpty ? "" : ", ", P.fg, false),
                 (a.waiting.isEmpty ? "" : "\(a.waiting.count) waiting", P.yellow, true),
@@ -152,13 +152,17 @@ struct HtopStyle: MenuStyle {
             switch a.status {
             case "busy": return ("R", .systemGreen)
             case "waiting": return ("W", .systemOrange)
+            // Conductor stopped the process but the pin keeps its cache warm:
+            // gone, not yet reaped, which is what htop's Z means.
+            case "exited": return ("Z", .secondaryLabelColor)
             default: return ("S", pin != nil ? .labelColor : .tertiaryLabelColor)
             }
         }()
         let base: NSColor = a.isBusy || a.isWaiting || pin != nil ? .labelColor : .secondaryLabelColor
         var parts: [(String, NSColor)] = [(" ", base), (pad(state, 3), tint)]
         parts.append((pad(truncate(a.label, 29), 31), base))
-        let since = a.statusSince.map { formatDuration(now.timeIntervalSince($0)) } ?? "—"
+        let since = a.statusSince.map { formatDuration(now.timeIntervalSince($0)) }
+            ?? (a.status == "exited" ? "exited" : "—")
         parts.append((pad(since, 10), a.isWaiting ? .systemOrange : .secondaryLabelColor))
         if let (text, color) = cacheCell(a, pin: pin, now: now) {
             parts.append((pad(text, 12), color))

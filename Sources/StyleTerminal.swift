@@ -135,6 +135,7 @@ struct TerminalStyle: MenuStyle {
             switch a.status {
             case "busy": return ("●", .systemGreen)
             case "waiting": return ("◐", .systemOrange)
+            case "exited": return ("◌", .secondaryLabelColor)
             default: return (pin != nil ? "◉" : "○", pin != nil ? .labelColor : .tertiaryLabelColor)
             }
         }()

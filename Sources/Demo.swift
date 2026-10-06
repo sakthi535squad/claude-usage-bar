@@ -20,9 +20,14 @@ enum Demo {
     }
 
     static let warmId = "demo-warm"
+    static let exitedId = "demo-exited"
 
     static func pins(now: Date) -> [String: Pin] {
-        [warmId: Pin(sessionId: warmId, pinnedAt: now.addingTimeInterval(-2 * 3600), lastPingAt: nil)]
+        [
+            warmId: Pin(sessionId: warmId, pinnedAt: now.addingTimeInterval(-2 * 3600), lastPingAt: nil),
+            exitedId: Pin(sessionId: exitedId, pinnedAt: now.addingTimeInterval(-3 * 3600),
+                          lastPingAt: now.addingTimeInterval(-38 * 60)),
+        ]
     }
 
     static func agents(now: Date) -> AgentSnapshot {
@@ -44,12 +49,25 @@ enum Demo {
             a.subagents = subagents
             return a
         }
+        // Pinned, but Conductor has stopped its process: what SessionScanner
+        // builds from the pin, with no pid, start time or Conductor title.
+        func exited(_ label: String, id: String, context: Int, hit: Double, requestAgo: Double) -> AgentSession {
+            var a = AgentSession(pid: 0, name: label, cwd: "/tmp", status: "exited", sessionId: id,
+                                 statusSince: nil, waitingFor: nil)
+            a.label = label
+            a.contextTokens = context
+            a.cacheHit = hit
+            a.lastRequestAt = now.addingTimeInterval(-requestAgo * 60)
+            a.cacheTTL = 3600
+            return a
+        }
         return AgentSnapshot(sessions: [
             s("knowledge-graph-learning", "waiting", since: 212, waitingFor: "dialog open",
               context: 121_000, hit: 0.97, requestAgo: 18),
             s("Repo UI Improvement", "busy", since: 32, context: 488_000, writeAgo: 14),
             s("Pipecat 1.6 rollout audit", "busy", since: 6, context: 156_000, subagents: 3),
             s("Worktrees old delete", "idle", since: 32, id: warmId, context: 64_000, hit: 0.99, requestAgo: 33),
+            exited("API refactor", id: exitedId, context: 173_000, hit: 0.97, requestAgo: 95),
             s("Fix Exotel webhook retries", "idle", since: 48, context: 92_000, hit: 0.95, requestAgo: 48),
             s("Claude usage tracker Mac", "idle", since: 75, context: 230_000, hit: 0.98, requestAgo: 75),
             s("Lens trace explorer", "idle", since: 140, hit: 0.91, requestAgo: 140),
