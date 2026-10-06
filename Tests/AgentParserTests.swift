@@ -197,6 +197,7 @@ check("drops I/O, identity and permission flags",
       built.contains { ["stream-json", "--verbose", "stdio", "--resume=old-id", "bypassPermissions", "x", "1000", "--session-mirror"].contains($0) }, false)
 check("resumes the registry session, forked and unpersisted",
       built.contains("sid") && built.contains("--fork-session") && built.contains("--no-session-persistence"), true)
+check("pings skip the skill listing", built.contains("--disable-slash-commands"), true)
 
 let okOut = Data(#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.7350,"usage":{"input_tokens":2,"cache_read_input_tokens":63720,"cache_creation_input_tokens":1825}}"#.utf8)
 if case .success(let r) = parsePingOutput(okOut) {

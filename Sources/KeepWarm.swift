@@ -207,6 +207,10 @@ func pingArguments(from live: [String], sessionId: String) -> [String] {
         "--resume", sessionId, "--fork-session", "--no-session-persistence",
         "--output-format", "json", "--max-turns", "1",
         "--settings", #"{"disableAllHooks":true}"#,
+        // A compacted session has no skill listing in its history, so resume
+        // appends all of it (~13k tokens) at write prices on every ping. Skills
+        // ride in messages, not the tool list, so the prefix still matches.
+        "--disable-slash-commands",
     ]
 }
 
