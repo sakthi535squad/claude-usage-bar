@@ -1,12 +1,17 @@
 import Cocoa
 
+protocol Spinning: AnyObject {
+    func start()
+    func stop()
+}
+
 /// A spinner that costs no per-frame CPU.
 ///
 /// Animating by re-setting the status item's title measured ~13ms a frame,
 /// because it forces the whole menu bar to re-measure. This instead is a
 /// fixed-size layer-backed view with a Core Animation rotation: the layer is
 /// handed to the compositor once and spun on the GPU, so nothing wakes per frame.
-final class SpinnerView: NSView {
+final class SpinnerView: NSView, Spinning {
     private let arc = CAShapeLayer()
 
     override init(frame: NSRect) {
@@ -55,5 +60,54 @@ final class SpinnerView: NSView {
 
     func stop() {
         arc.removeAnimation(forKey: "spin")
+    }
+}
+
+/// Claude Code's thinking glyph, cycling ✢ ✳ ✶ ✻ ✽ and back. Same cost model as
+/// SpinnerView: the frames are images handed to Core Animation once, and a
+/// discrete keyframe animation swaps them on the compositor.
+final class GlyphSpinnerView: NSView, Spinning {
+    private let glyph = CALayer()
+    private let frames: [CGImage]
+
+    init(frame: NSRect, color: NSColor) {
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let cycle = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"]
+        frames = cycle.compactMap { Self.render($0, size: frame.size, scale: scale, color: color) }
+        super.init(frame: frame)
+        wantsLayer = true
+        glyph.frame = bounds
+        glyph.contentsScale = scale
+        glyph.contents = frames.dropFirst(4).first
+        layer?.addSublayer(glyph)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private static func render(_ s: String, size: NSSize, scale: CGFloat, color: NSColor) -> CGImage? {
+        let px = NSSize(width: size.width * scale, height: size.height * scale)
+        let font = NSFont.systemFont(ofSize: size.height * scale * 0.95, weight: .bold)
+        let text = NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color])
+        let img = NSImage(size: px, flipped: false) { r in
+            let t = text.size()
+            text.draw(at: NSPoint(x: (r.width - t.width) / 2, y: (r.height - t.height) / 2))
+            return true
+        }
+        return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    func start() {
+        guard glyph.animation(forKey: "cycle") == nil, !frames.isEmpty else { return }
+        let a = CAKeyframeAnimation(keyPath: "contents")
+        a.values = frames
+        a.calculationMode = .discrete
+        a.duration = 0.12 * Double(frames.count)
+        a.repeatCount = .infinity
+        a.isRemovedOnCompletion = false
+        glyph.add(a, forKey: "cycle")
+    }
+
+    func stop() {
+        glyph.removeAnimation(forKey: "cycle")
     }
 }
