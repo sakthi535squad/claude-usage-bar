@@ -6,19 +6,7 @@
 ⚑1  5h 13%  7d 79%  ⟳ 2 busy (+3)
 ```
 
-```
-5-hour       █·········  13%   resets 4h 2m
-             ↳ full by 3:40 PM, resets 4:10 PM
-7-day        ████████··  79%   resets 2d 6h
-Updated 2m ago · live
-NEEDS YOU
-◐ knowledge-graph-learning   waiting 3h 32m                  dialog open
-WORKING
-● Repo UI Improvement        busy 32m                  488k  ⚠ silent 14m
-KEPT WARM
-○ API refactor               idle 1h 5m    ↻ 97% 42m
-2 idle ▸
-```
+![The dropdown in the Claude Code theme](docs/themes/claude.png)
 
 Native Swift, a single binary, no dependencies, no Xcode project. Idle CPU is
 indistinguishable from zero.
@@ -53,6 +41,23 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 - **Keep Cache Warm.** Pin a session and it is pinged shortly before the cache
   expires, so coming back to it costs cache-read prices, not a full rewrite.
   One avoided cold turn pays for about 20 pings.
+
+## Themes
+
+![Terminal, htop and Claude Code themes](docs/themes/gallery.png)
+
+Pick one from **Theme ▸** in the menu; the choice is remembered. Every theme
+reads the same data, so switching never changes what is polled or pinged.
+
+| Theme | Look |
+|---|---|
+| **Claude Code** (default) | A terracotta welcome box holding the limits, `●` section bullets, `⎿` result lines, actions as `/refresh` and `/usage`, and Claude Code's `✢ ✳ ✶ ✻ ✽` spinner. |
+| **htop** | A dark terminal panel with htop meters and a summary line, then sessions as a process table: `R` running, `W` waiting, `S` sleeping, `Z` exited but kept warm. |
+| **Terminal** | A `❯ claude usage` prompt line, two-tone bars with eighth-cell resolution, and `── section · n ───` rules. |
+| **Classic** | The original text layout. |
+
+Why they look the way they do: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md#themes).
+Design discussion: [#8](https://github.com/sakthi535squad/claude-usage-bar/issues/8).
 
 Works with any Claude Code session. If you use [Conductor](https://conductor.build),
 sessions are labelled with their chat titles and get an **Open in Conductor** action.
@@ -94,7 +99,19 @@ ClaudeUsage --dump --cache-only     # exercise the offline fallback
 ClaudeUsage --agents                # session rows as the dropdown shows them
 ClaudeUsage --ping <pid> --dry-run  # the exact command a keep-warm ping would run
 ./test.sh                           # unit tests
+./preview.sh                        # build without installing; screenshot every theme
 ```
+
+For screenshots or demos, `--demo` runs on fixed data with one of every state
+and never polls, scans, pings or notifies, so it is safe beside the real app:
+
+```bash
+ClaudeUsage --demo -theme htop --snapshot out.png   # open the real menu, capture it, quit
+ClaudeUsage --demo --light -theme claude --snapshot out.png
+ClaudeUsage --render-bar bar.png                    # every theme's menu bar title, dark and light
+```
+
+`--snapshot` needs Screen Recording permission for the terminal running it.
 
 `ClaudeUsage` is `/Applications/ClaudeUsage.app/Contents/MacOS/ClaudeUsage`.
 
