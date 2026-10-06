@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Keep All Sessions Warm.** Off, 8, 24 or 48 hours. Every session with a
+  real turn in that window stays pinned, new sessions start pinned, and each is
+  dropped after that long without a turn. Pings never count as activity.
+
 ## v0.4 — 6 Oct 2026
 
 - **Keep Cache Warm.** Pin an idle session from its submenu and it is pinged

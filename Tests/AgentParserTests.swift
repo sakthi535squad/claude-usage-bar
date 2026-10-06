@@ -200,6 +200,35 @@ check("activity older than pinMaxAge expires", store.isPinned("stale"), false)
 check("no activity falls back to pinnedAt", store.isPinned("quiet"), false)
 store.remove("busy")
 
+// Keep All Sessions Warm
+func live(_ id: String, requestAgo: TimeInterval?, since: TimeInterval = 60, pid: pid_t = 1) -> AgentSession {
+    var a = AgentSession(pid: pid, name: id, cwd: "", status: "idle", sessionId: id,
+                         statusSince: now.addingTimeInterval(-since), waitingFor: nil)
+    a.lastRequestAt = requestAgo.map { now.addingTimeInterval(-$0) }
+    return a
+}
+let autoPath = "/tmp/agent-fixture-pins-auto.json"
+try? FileManager.default.removeItem(atPath: autoPath)
+let auto = PinStore(path: autoPath)
+let day: TimeInterval = 24 * 3600
+auto.toggle("manual", now: now.addingTimeInterval(-3600))
+auto.autoPin([live("new", requestAgo: nil), live("recent", requestAgo: 20 * 3600),
+              live("old", requestAgo: 30 * 3600), live("gone", requestAgo: 60, pid: 0),
+              live("skipped", requestAgo: 60), live("manual", requestAgo: 60)],
+             window: day, skip: ["skipped"], now: now)
+check("auto-pins sessions active inside the window", auto.pins.keys.sorted(), ["manual", "new", "recent"])
+check("manual pin stays manual", auto.pins["manual"]?.auto, nil)
+check("auto flag persists", PinStore(path: autoPath).pins["new"]?.auto, true)
+auto.prune(now: now.addingTimeInterval(5 * 3600), autoWindow: day)
+check("auto pin expires a window after its last turn", auto.pins.keys.sorted(), ["manual", "new"])
+auto.autoPin([live("recent", requestAgo: 25 * 3600)], window: day, skip: [], now: now)
+check("expired session is not re-pinned without a new turn", auto.isPinned("recent"), false)
+auto.prune(now: now.addingTimeInterval(9 * 3600), autoWindow: 8 * 3600)
+check("auto pins follow the chosen window", auto.pins.keys.sorted(), ["manual"])
+auto.autoPin([live("a1", requestAgo: 60)], window: day, skip: [], now: now)
+auto.removeAuto()
+check("turning off drops only auto pins", auto.pins.keys.sorted(), ["manual"])
+
 let legacyPath = "/tmp/agent-fixture-pins-legacy.json"
 try? Data(#"[{"sessionId":"l","pinnedAt":"2026-01-01T00:00:00Z"}]"#.utf8).write(to: URL(fileURLWithPath: legacyPath))
 check("pins.json without lastActiveAt still decodes", PinStore(path: legacyPath).pins["l"]?.lastActiveAt == nil

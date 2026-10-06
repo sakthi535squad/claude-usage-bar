@@ -116,6 +116,11 @@ Guards:
 - **Pins expire** after 24 hours without a real turn in the session (pings
   don't count) or when the session ends.
 - **Pings pause** while the 5-hour window is at 90% or more.
+- **Keep All Sessions Warm** (Off / 8h / 24h / 48h) pins every live session
+  whose last real turn falls inside the window; a new session counts from when
+  it started. Its pins expire on that window instead of 24 hours, and a session
+  you unpin by hand, or whose ping missed, is not pinned again. Turning it off
+  drops the automatic pins and keeps the manual ones.
 - Every ping is logged to `~/.config/claude-usage-bar/keepwarm.log`, with its
   token counts and list-price cost. Pins are stored in `pins.json` next to it.
 

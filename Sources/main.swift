@@ -235,6 +235,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pinging = Set<String>()
     /// Last keep-warm outcome per session, shown in its submenu.
     var pinNotes: [String: String] = [:]
+    /// Keep All Sessions Warm: pin every session active within this many seconds. Zero is off.
+    var keepAllWindow: TimeInterval {
+        get { UserDefaults.standard.double(forKey: "keepAllWindow") }
+        set { UserDefaults.standard.set(newValue, forKey: "keepAllWindow") }
+    }
+    /// Sessions unpinned by hand or by a missed ping, so Keep All Sessions Warm
+    /// does not pin them straight back.
+    var keepAllSkip: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "keepAllSkip") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "keepAllSkip") }
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
@@ -491,6 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
+        menu.addItem(keepAllItem())
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         for mi in menu.items where mi.action != nil && mi.action != #selector(NSApplication.terminate(_:)) {
@@ -572,8 +584,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mi
     }
 
+    func keepAllItem() -> NSMenuItem {
+        let mi = NSMenuItem(title: "Keep All Sessions Warm", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.addItem(disabled("Pin sessions with a turn in the last"))
+        for w in keepAllWindows {
+            let opt = NSMenuItem(title: w == 0 ? "Off" : "\(Int(w / 3600)) hours",
+                                 action: #selector(setKeepAll(_:)), keyEquivalent: "")
+            opt.target = self
+            opt.representedObject = w
+            opt.state = keepAllWindow == w ? .on : .off
+            sub.addItem(opt)
+        }
+        mi.submenu = sub
+        return mi
+    }
+
+    @objc func setKeepAll(_ sender: NSMenuItem) {
+        guard let w = sender.representedObject as? TimeInterval else { return }
+        keepAllWindow = w
+        if w == 0 {
+            pins.removeAuto()
+            keepAllSkip = []
+        }
+        keepWarm(agents)
+        rebuildMenu()
+    }
+
     @objc func togglePin(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        if pins.isPinned(id) { keepAllSkip.insert(id) } else { keepAllSkip.remove(id) }
         pins.toggle(id)
         if let a = agents.sessions.first(where: { $0.sessionId == id && $0.pid > 0 }) { pins.capture(a) }
         pinNotes[id] = nil
@@ -585,8 +625,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the 60s scan tick; the ping itself is a forked, unpersisted `claude -p`.
     func keepWarm(_ snapshot: AgentSnapshot) {
         for a in snapshot.sessions { pins.recordActivity(a.sessionId, at: a.lastRequestAt) }
-        pins.prune()
         let live = snapshot.sessions.filter { $0.pid > 0 }
+        let window = keepAllWindow
+        if window > 0 {
+            // Forget skips for sessions that have ended, so the list stays small.
+            let ids = Set(live.map(\.sessionId))
+            if !keepAllSkip.isSubset(of: ids) { keepAllSkip.formIntersection(ids) }
+            pins.autoPin(live, window: window, skip: keepAllSkip)
+        }
+        pins.prune(autoWindow: window > 0 ? window : pinMaxAge)
         for a in live where pins.isPinned(a.sessionId) { pins.capture(a) }
         if let five = usage?.windows.first(where: { $0.key == "five_hour" }),
            five.utilization >= keepWarmPauseAbovePct {
@@ -625,6 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The ping warmed some other prefix; repeating it would only pay
                 // write prices again each time without helping the session.
                 pins.remove(a.sessionId)
+                keepAllSkip.insert(a.sessionId)
                 pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache"
             } else {
                 pins.recordPing(a.sessionId, at: sentAt)

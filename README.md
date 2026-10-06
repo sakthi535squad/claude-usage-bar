@@ -41,6 +41,9 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 - **Keep Cache Warm.** Pin a session and it is pinged shortly before the cache
   expires, so coming back to it costs cache-read prices, not a full rewrite.
   One avoided cold turn pays for about 20 pings.
+- **Keep All Sessions Warm.** Off, 8, 24 or 48 hours: every session with a real
+  turn in that window is pinned automatically, new sessions included, and
+  dropped once it has been idle that long.
 
 Works with any Claude Code session. If you use [Conductor](https://conductor.build),
 sessions are labelled with their chat titles and get an **Open in Conductor** action.
