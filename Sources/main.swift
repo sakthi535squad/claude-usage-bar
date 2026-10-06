@@ -515,9 +515,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refreshAgents() {
+        let pinned = Array(pins.pins.values)
         scanQueue.async { [weak self] in
             guard let self else { return }
-            let snapshot = self.scanner.snapshot()
+            let snapshot = self.scanner.snapshot(pinned: pinned)
             DispatchQueue.main.async {
                 self.notifyWaits(snapshot)
                 self.agents = snapshot
@@ -574,6 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func togglePin(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         pins.toggle(id)
+        if let a = agents.sessions.first(where: { $0.sessionId == id && $0.pid > 0 }) { pins.capture(a) }
         pinNotes[id] = nil
         keepWarm(agents)
         rebuildMenu()
@@ -582,7 +584,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Pings every pinned, idle session whose cache is about to lapse. Runs on
     /// the 60s scan tick; the ping itself is a forked, unpersisted `claude -p`.
     func keepWarm(_ snapshot: AgentSnapshot) {
-        pins.prune(live: Set(snapshot.sessions.map(\.sessionId)))
+        pins.prune()
+        let live = snapshot.sessions.filter { $0.pid > 0 }
+        for a in live where pins.isPinned(a.sessionId) { pins.capture(a) }
         if let five = usage?.windows.first(where: { $0.key == "five_hour" }),
            five.utilization >= keepWarmPauseAbovePct {
             for id in pins.pins.keys { pinNotes[id] = "Paused: 5-hour window at \(Int(five.utilization))%" }
@@ -590,12 +594,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let now = Date()
         for a in snapshot.sessions {
-            guard let pin = pins.pins[a.sessionId], !pinging.contains(a.sessionId),
-                  pingDue(a, pin: pin, now: now) else { continue }
+            guard let pin = pins.pins[a.sessionId], !pinging.contains(a.sessionId) else { continue }
+            // Once an exited session goes cold nothing can usefully warm it, so
+            // the pin is done. A live one stays pinned for after its next turn.
+            if a.pid == 0, let c = cacheState(a, pin: pin), c.remaining(at: now) <= 0 {
+                pins.remove(a.sessionId)
+                pinNotes[a.sessionId] = nil
+                continue
+            }
+            guard pingDue(a, pin: pin, now: now) else { continue }
             pinging.insert(a.sessionId)
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let sentAt = Date()
-                let result = runPing(a)
+                let result = runPing(a, pin: pin, live: live)
                 logPing(a.label, sessionId: a.sessionId, result, at: sentAt)
                 DispatchQueue.main.async { self?.finishPing(a, result, sentAt: sentAt) }
             }
@@ -753,8 +764,8 @@ extension AppDelegate: NSMenuDelegate {
 // `ClaudeUsage --dump` prints what the menu bar would show and exits. The status
 // bar itself is invisible to screencapture, so this is how the data path is checked.
 if CommandLine.arguments.contains("--agents") {
-    let snap = SessionScanner().snapshot()
     let pins = PinStore()
+    let snap = SessionScanner().snapshot(pinned: Array(pins.pins.values))
     if snap.sessions.isEmpty {
         print("No Claude Code sessions running")
     } else {
@@ -783,9 +794,9 @@ if let i = CommandLine.arguments.firstIndex(of: "--ping") {
         exit(0)
     }
     let context = a.contextTokens ?? 0
-    switch runPing(a) {
+    switch runPing(a, pin: nil, live: []) {
     case .success(let r):
-        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input), cost \(r.costUSD.map { String(format: "$%.4f", $0) } ?? "?")")
+        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input)")
         exit(Double(r.cacheRead) >= pingMinCacheRead * Double(context) ? 0 : 2)
     case .failure(let e):
         print("ping failed: \(e)"); exit(1)

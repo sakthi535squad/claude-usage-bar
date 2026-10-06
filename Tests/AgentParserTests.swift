@@ -173,10 +173,11 @@ store.recordPing("a", at: now)
 check("pins persist", PinStore(path: pinPath).pins.keys.sorted(), ["a", "b"])
 check("ping time persists", PinStore(path: pinPath).pins["a"]?.lastPingAt.map { Int($0.timeIntervalSince1970) },
       Int(now.timeIntervalSince1970))
-store.prune(live: ["a", "b"], now: now)
+store.prune(now: now)
 check("old pin expires", store.pins.keys.sorted(), ["a"])
-store.prune(live: [], now: now)
-check("ended session unpins", store.pins.isEmpty, true)
+store.prune(now: now)
+check("ended session stays pinned", store.pins.keys.sorted(), ["a"])
+store.remove("a")
 store.toggle("c", now: now)
 store.toggle("c", now: now)
 check("toggle twice unpins", PinStore(path: pinPath).pins.isEmpty, true)
@@ -197,7 +198,7 @@ check("drops I/O, identity and permission flags",
 check("resumes the registry session, forked and unpersisted",
       built.contains("sid") && built.contains("--fork-session") && built.contains("--no-session-persistence"), true)
 
-let okOut = Data(#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.0274,"usage":{"input_tokens":2,"cache_read_input_tokens":63720,"cache_creation_input_tokens":1825}}"#.utf8)
+let okOut = Data(#"{"type":"result","is_error":false,"result":"ok","total_cost_usd":0.7350,"usage":{"input_tokens":2,"cache_read_input_tokens":63720,"cache_creation_input_tokens":1825}}"#.utf8)
 if case .success(let r) = parsePingOutput(okOut) {
     check("ping output parsed", [r.cacheRead, r.cacheWrite, r.input], [63720, 1825, 2])
 } else { check("ping output parsed", false, true) }
@@ -205,5 +206,15 @@ let errOut = Data(#"{"type":"result","is_error":true,"result":"No conversation f
 if case .failure(.failed(let msg)) = parsePingOutput(errOut) {
     check("ping error surfaced", msg.contains("No conversation found"), true)
 } else { check("ping error surfaced", false, true) }
+
+// An exited pinned session stays visible with its cache state
+let exitedPin = Pin(sessionId: "no-such-session", pinnedAt: now, lastPingAt: nil, cwd: "/tmp/nowhere",
+                    label: "Old chat", exe: "/bin/true", args: [])
+let ex = SessionScanner().snapshot(pinned: [exitedPin]).sessions.first { $0.sessionId == "no-such-session" }
+check("exited pin kept in snapshot", ex?.status, "exited")
+check("exited pin keeps its label", ex?.label, "Old chat")
+check("exited pin uses captured launch",
+      pingLaunch(ex!, pin: exitedPin, live: []).map { $0.exe }, "/bin/true")
+check("no captured launch, no ping", pingLaunch(ex!, pin: Pin(sessionId: "x", pinnedAt: now), live: []) == nil, true)
 
 exit(failed ? 1 : 0)

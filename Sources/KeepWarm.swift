@@ -22,6 +22,14 @@ struct Pin: Codable, Equatable {
     /// When the last successful ping was sent. Pings are not persisted to the
     /// transcript, so this is the only record that the cache was refreshed.
     var lastPingAt: Date?
+    /// Conductor stops idle chat processes, but the cache lives server-side and
+    /// Conductor resumes with the same flags. So the launch is captured while the
+    /// process is alive and pinging carries on from it after the process exits.
+    var cwd: String?
+    var label: String?
+    var exe: String?
+    /// Without argv[0].
+    var args: [String]?
 }
 
 struct CacheState {
@@ -72,6 +80,18 @@ final class PinStore {
         save()
     }
 
+    /// Records how a live session was launched, so it can be pinged after exit.
+    func capture(_ a: AgentSession) {
+        guard pins[a.sessionId] != nil, let launch = processLaunch(a.pid) else { return }
+        let args = Array(launch.args.dropFirst())
+        guard pins[a.sessionId]?.args != args || pins[a.sessionId]?.label != a.label else { return }
+        pins[a.sessionId]?.cwd = a.cwd
+        pins[a.sessionId]?.label = a.label
+        pins[a.sessionId]?.exe = launch.exe
+        pins[a.sessionId]?.args = args
+        save()
+    }
+
     func recordPing(_ id: String, at: Date) {
         guard pins[id] != nil else { return }
         pins[id]?.lastPingAt = at
@@ -83,9 +103,9 @@ final class PinStore {
         save()
     }
 
-    /// Drops pins whose session has ended or that have outlived `pinMaxAge`.
-    func prune(live: Set<String>, now: Date = Date()) {
-        let kept = pins.filter { live.contains($0.key) && now.timeIntervalSince($0.value.pinnedAt) < pinMaxAge }
+    /// Drops pins that have outlived `pinMaxAge`.
+    func prune(now: Date = Date()) {
+        let kept = pins.filter { now.timeIntervalSince($0.value.pinnedAt) < pinMaxAge }
         guard kept.count != pins.count else { return }
         pins = kept
         save()
@@ -190,11 +210,12 @@ func pingArguments(from live: [String], sessionId: String) -> [String] {
     ]
 }
 
+/// Token counts only: `total_cost_usd` on a resumed session includes the cost
+/// the session had already run up, restored from its transcript.
 struct PingResult {
     let cacheRead: Int
     let cacheWrite: Int
     let input: Int
-    let costUSD: Double?
 }
 
 enum PingError: Error, CustomStringConvertible {
@@ -205,7 +226,7 @@ enum PingError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .processGone: return "session process is gone"
+        case .processGone: return "session exited before its launch was captured"
         case .launch(let e): return "could not launch claude: \(e)"
         case .timeout: return "ping timed out"
         case .failed(let e): return e
@@ -224,19 +245,28 @@ func parsePingOutput(_ data: Data) -> Result<PingResult, PingError> {
     guard let u = root["usage"] as? [String: Any] else { return .failure(.failed("no usage in output")) }
     return .success(PingResult(cacheRead: u["cache_read_input_tokens"] as? Int ?? 0,
                                cacheWrite: u["cache_creation_input_tokens"] as? Int ?? 0,
-                               input: u["input_tokens"] as? Int ?? 0,
-                               costUSD: root["total_cost_usd"] as? Double))
+                               input: u["input_tokens"] as? Int ?? 0))
+}
+
+/// The live process's launch when it is running, else the one captured at pin
+/// time. The environment is borrowed from a live process of the same binary:
+/// launched from Finder, ours lacks the PATH that MCP servers need to start.
+func pingLaunch(_ a: AgentSession, pin: Pin?, live: [AgentSession]) -> (exe: String, args: [String], env: [String: String])? {
+    if a.pid > 0, kill(a.pid, 0) == 0, let l = processLaunch(a.pid) {
+        return (l.exe, Array(l.args.dropFirst()), l.env)
+    }
+    guard let exe = pin?.exe, let args = pin?.args else { return nil }
+    let env = live.lazy.compactMap { processLaunch($0.pid) }.first { $0.exe == exe }?.env
+    return (exe, args, env ?? ProcessInfo.processInfo.environment)
 }
 
 /// Blocks for up to `pingTimeout`; call off the main thread.
-func runPing(_ a: AgentSession) -> Result<PingResult, PingError> {
-    guard kill(a.pid, 0) == 0, let launch = processLaunch(a.pid) else { return .failure(.processGone) }
+func runPing(_ a: AgentSession, pin: Pin?, live: [AgentSession]) -> Result<PingResult, PingError> {
+    guard let launch = pingLaunch(a, pin: pin, live: live) else { return .failure(.processGone) }
 
     let p = Process()
     p.executableURL = URL(fileURLWithPath: launch.exe)
-    p.arguments = pingArguments(from: Array(launch.args.dropFirst()), sessionId: a.sessionId)
-    // The live process's environment, not ours: Conductor sets variables that
-    // change which tools Claude Code offers, and the tool list is in the prefix.
+    p.arguments = pingArguments(from: launch.args, sessionId: a.sessionId)
     p.environment = launch.env
     p.currentDirectoryURL = URL(fileURLWithPath: a.cwd)
     let out = Pipe()
@@ -261,8 +291,7 @@ func logPing(_ label: String, sessionId: String, _ result: Result<PingResult, Pi
     let line: String
     switch result {
     case .success(let r):
-        let cost = r.costUSD.map { String(format: " $%.4f", $0) } ?? ""
-        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input)\(cost)\n"
+        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input)\n"
     case .failure(let e):
         line = "\(ts) \(sessionId.prefix(8)) \(label): FAILED \(e)\n"
     }

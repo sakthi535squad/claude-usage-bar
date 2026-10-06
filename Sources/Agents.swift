@@ -142,8 +142,16 @@ final class SessionScanner {
     private let reader = TranscriptReader()
     private var branches: [String: (branch: String?, at: Date)] = [:]
 
-    func snapshot() -> AgentSnapshot {
+    /// `pinned` sessions whose process has exited are kept in the snapshot with
+    /// status "exited", so keep-warm and the menu still see their cache state.
+    func snapshot(pinned: [Pin] = []) -> AgentSnapshot {
         var sessions = readAgentSessions()
+        let live = Set(sessions.map(\.sessionId))
+        for pin in pinned where !live.contains(pin.sessionId) {
+            guard let cwd = pin.cwd else { continue }
+            sessions.append(AgentSession(pid: 0, name: pin.label ?? pin.sessionId, cwd: cwd, status: "exited",
+                                         sessionId: pin.sessionId, statusSince: nil, waitingFor: nil))
+        }
         let titles = conductorTitles()
         var watched = Set<String>()
         for i in sessions.indices {
@@ -156,7 +164,9 @@ final class SessionScanner {
                 sessions[i].cacheTTL = state.cacheTTL
                 sessions[i].lastWriteAt = lastWrite(transcript: path)
             }
-            if let title = titles[sessions[i].sessionId] {
+            if sessions[i].status == "exited" {
+                sessions[i].label = sessions[i].name
+            } else if let title = titles[sessions[i].sessionId] {
                 sessions[i].label = truncate(title, 34)
                 sessions[i].fromConductor = true
             } else if let branch = branch(sessions[i].cwd) {
