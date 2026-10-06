@@ -192,7 +192,7 @@ func shortLabel(_ key: String) -> String {
 
 /// Menu bar segments, one per window shown. Each carries its own utilisation so it
 /// can be coloured independently — a healthy 5h should not inherit a red 7d.
-func titleSegments(_ u: Usage) -> [(text: String, pct: Double)] {
+func classicTitleSegments(_ u: Usage) -> [(text: String, pct: Double)] {
     let stale = (u.fromCache || u.isStale) ? "~" : ""
     let shown = u.windows.filter { $0.key == "five_hour" || $0.key == "seven_day" }
     let use = shown.isEmpty ? (u.binding.map { [$0] } ?? []) : shown
@@ -200,7 +200,34 @@ func titleSegments(_ u: Usage) -> [(text: String, pct: Double)] {
 }
 
 func titleText(_ u: Usage) -> String {
-    titleSegments(u).map(\.text).joined(separator: "  ")
+    classicTitleSegments(u).map(\.text).joined(separator: "  ")
+}
+
+/// Everything the menu bar shows, in order: waiting badge, the theme's usage
+/// segments, then the agent suffix the spinner sits in.
+func menuBarSegments(_ style: MenuStyle, _ u: Usage, _ agents: AgentSnapshot) -> [(text: String, color: NSColor)] {
+    var segs = style.titleSegments(u)
+    if let badge = waitingBadge(agents) {
+        segs.insert((text: badge, color: .systemOrange), at: 0)
+    }
+    if let suffix = agentSuffix(agents) {
+        segs.append((text: suffix, color: .labelColor))
+    }
+    return segs
+}
+
+func composeTitle(_ segments: [(text: String, color: NSColor)]) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    for (i, seg) in segments.enumerated() {
+        if i > 0 {
+            out.append(NSAttributedString(string: "  ", attributes: [.font: AppDelegate.barFont]))
+        }
+        out.append(NSAttributedString(string: seg.text, attributes: [
+            .font: AppDelegate.barFont,
+            .foregroundColor: seg.color,
+        ]))
+    }
+    return out
 }
 
 // MARK: - App
@@ -215,7 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let scanner = SessionScanner()
     let scanQueue = DispatchQueue(label: "claude-usage.scan", qos: .utility)
     static let spinnerSize: CGFloat = 12
-    let spinner = SpinnerView(frame: NSRect(x: 0, y: 0, width: spinnerSize, height: spinnerSize))
+    var theme = Theme.current
+    lazy var spinner: NSView & Spinning = theme.style.makeSpinner(size: Self.spinnerSize)
+    /// `--demo`: fixture data only. No polling, scanning, pings or notifications,
+    /// so it can run beside the real app without either one noticing.
+    let demo = CommandLine.arguments.contains("--demo")
     /// Live readings of the 5-hour window, for the "full by" forecast.
     let pace = PaceTracker()
     /// One notification per wait: keyed by session and the time the wait began.
@@ -238,9 +269,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
-        item.autosaveName = "ClaudeUsageStatusItem"
+        // The demo saves its own, or it would move the real app's item.
+        item.autosaveName = demo ? "ClaudeUsageDemoItem" : "ClaudeUsageStatusItem"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         setTitle("Claude …", pct: 0, dimmed: true)
+        if demo {
+            if CommandLine.arguments.contains("--light") { NSApp.appearance = NSAppearance(named: .aqua) }
+            let now = Date()
+            usage = Demo.usage(now: now)
+            agents = Demo.agents(now: now)
+            render()
+            if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
+                snapshot(to: CommandLine.arguments[i + 1])
+            }
+            return
+        }
         refreshAgents()
         rebuildMenu()
         refresh()
@@ -288,22 +331,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setTitle(segments: [(text: String, color: NSColor)]) {
-        let out = NSMutableAttributedString()
-        for (i, seg) in segments.enumerated() {
-            if i > 0 {
-                out.append(NSAttributedString(string: "  ", attributes: [.font: Self.barFont]))
-            }
-            out.append(NSAttributedString(string: seg.text, attributes: [
-                .font: Self.barFont,
-                .foregroundColor: seg.color,
-            ]))
-        }
         item.button?.image = nil
         item.button?.imagePosition = .noImage
-        item.button?.attributedTitle = out
+        item.button?.attributedTitle = composeTitle(segments)
     }
 
     func refresh(manual: Bool = false) {
+        guard !demo else { return }
         if !manual, let until = backoffUntil, until > Date() { return }
         // fetchLive shells out to `security` and blocks on it, so it must not run
         // on the main thread. The completion hops back to main itself.
@@ -363,14 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// whole menu at that rate would be wasteful.
     func renderTitle() {
         guard let u = usage, u.binding != nil else { return }
-        var segs = titleSegments(u).map { (text: $0.text, color: color(for: $0.pct)) }
-        if let badge = waitingBadge(agents) {
-            segs.insert((text: badge, color: .systemOrange), at: 0)
-        }
-        if let suffix = agentSuffix(agents) {
-            segs.append((text: suffix, color: .labelColor))
-        }
-        setTitle(segments: segs)
+        setTitle(segments: menuBarSegments(theme.style, u, agents))
         positionSpinner()
     }
 
@@ -416,97 +443,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-
-        if let u = usage {
-            for w in u.windows {
-                let line = String(format: "%@ %@ %3d%%   resets %@",
-                                  pad(w.label, 12), bar(w.utilization),
-                                  Int(w.utilization.rounded()), countdown(to: w.resetsAt))
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = NSAttributedString(string: line, attributes: [
-                    .font: mono, .foregroundColor: color(for: w.utilization),
-                ])
-                menu.addItem(mi)
-                if w.key == "five_hour", !u.fromCache {
-                    menu.addItem(paceItem(pace.forecast(), resetsAt: w.resetsAt, font: mono))
-                }
-            }
-
-            if let e = u.extra, e.enabled {
-                menu.addItem(.separator())
-                let line = String(format: "%@ %@ %3d%%   %@%.0f of %.0f",
-                                  pad("Extra usage", 12), bar(e.utilization),
-                                  Int(e.utilization.rounded()),
-                                  e.currency == "USD" ? "$" : "", e.used, e.limit)
-                let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-                mi.attributedTitle = NSAttributedString(string: line, attributes: [
-                    .font: mono, .foregroundColor: color(for: e.utilization),
-                ])
-                menu.addItem(mi)
-            }
-
-            menu.addItem(.separator())
-            let src = u.fromCache ? "cached from Claude Code"
-                : (u.isStale ? "stale — refresh to update" : "live")
-            menu.addItem(disabled("Updated \(ago(u.fetchedAt)) · \(src)"))
-        }
-
-        let rowFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let style = theme.style
         let now = Date()
-        if agents.sessions.isEmpty {
-            menu.addItem(disabled("No Claude Code sessions running"))
-        }
-        if !agents.waiting.isEmpty {
-            menu.addItem(disabled("NEEDS YOU"))
-            for a in agents.waiting { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
-        }
-        if !agents.busy.isEmpty {
-            menu.addItem(disabled("WORKING"))
-            for a in agents.busy { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
-        }
-        let warm = agents.idle.filter { pins.isPinned($0.sessionId) }
-        if !warm.isEmpty {
-            menu.addItem(disabled("KEPT WARM"))
-            for a in warm { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
-        }
-        let idle = agents.idle.filter { !pins.isPinned($0.sessionId) }
-        if !idle.isEmpty {
-            // Idle sessions need nothing from you, so they fold away.
-            let fold = NSMenuItem(title: "\(idle.count) idle", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            for a in idle { sub.addItem(sessionItem(a, font: rowFont, now: now)) }
-            fold.submenu = sub
-            menu.addItem(fold)
-        }
-        menu.addItem(.separator())
+        let context = MenuContext(
+            usage: usage, pace: demo ? Demo.pace(now: now) : pace.forecast(),
+            agents: agents, pins: pinMap, lastError: lastError, now: now,
+            sessionItem: { [unowned self] a, title in self.sessionItem(a, title: title) })
+        for mi in style.contentItems(context) { menu.addItem(mi) }
 
-        if let err = lastError {
-            menu.addItem(disabled("⚠ \(err)"))
-        }
-
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Refresh Now", action: #selector(doRefresh), keyEquivalent: "r"))
-        menu.addItem(NSMenuItem(title: "Open Usage Page", action: #selector(openUsage), keyEquivalent: "u"))
-        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        for mi in menu.items where mi.action != nil && mi.action != #selector(NSApplication.terminate(_:)) {
+        func action(_ title: String, _ command: String, _ sel: Selector?, _ key: String = "",
+                    state: NSControl.StateValue = .off) -> NSMenuItem {
+            let mi = NSMenuItem(title: title, action: sel, keyEquivalent: key)
             mi.target = self
+            mi.state = state
+            style.styleAction(mi, command: command)
+            // A checked item makes AppKit add a state column, which moves native
+            // titles right but not the grid views aligned to them, and
+            // showsStateColumn = false does not suppress it. The other themes
+            // already show the state in the title.
+            if theme != .classic { mi.state = .off }
+            menu.addItem(mi)
+            return mi
         }
+        _ = action("Refresh Now", "refresh", #selector(doRefresh), "r")
+        _ = action("Open Usage Page", "usage", #selector(openUsage), "u")
+        let themes = action("Theme", "theme", nil)
+        let picker = NSMenu()
+        for t in Theme.allCases {
+            let mi = NSMenuItem(title: t.title, action: #selector(selectTheme(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = t.rawValue
+            mi.state = t == theme ? .on : .off
+            picker.addItem(mi)
+        }
+        themes.submenu = picker
+        _ = action("Open at Login", "login", #selector(toggleLogin),
+                   state: SMAppService.mainApp.status == .enabled ? .on : .off)
+        menu.addItem(.separator())
+        let quit = action("Quit", "quit", #selector(NSApplication.terminate(_:)), "q")
+        quit.target = nil
         return menu
     }
 
-    func disabled(_ text: String) -> NSMenuItem {
-        let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-        mi.isEnabled = false
-        mi.attributedTitle = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 11),
-            .foregroundColor: NSColor.secondaryLabelColor,
-        ])
-        return mi
+    @objc func selectTheme(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let t = Theme(rawValue: raw) else { return }
+        theme = t
+        Theme.current = t
+        spinner.stop()
+        spinner.removeFromSuperview()
+        spinner = t.style.makeSpinner(size: Self.spinnerSize)
+        render()
+    }
+
+    /// The demo's pins are fixtures; the real store is never touched by it.
+    var pinMap: [String: Pin] {
+        demo ? Demo.pins(now: Date()) : pins.pins
     }
 
     @objc func doRefresh() {
@@ -515,6 +506,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refreshAgents() {
+        guard !demo else { return }
         let pinned = Array(pins.pins.values)
         scanQueue.async { [weak self] in
             guard let self else { return }
@@ -551,17 +543,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notifiedWaits.formIntersection(current)
     }
 
-    func sessionItem(_ a: AgentSession, font: NSFont, now: Date) -> NSMenuItem {
+    func sessionItem(_ a: AgentSession, title: NSAttributedString) -> NSMenuItem {
         let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        mi.attributedTitle = sessionRow(a, font: font, now: now, pin: pins.pins[a.sessionId])
+        mi.attributedTitle = title
 
         let sub = NSMenu()
         let toggle = NSMenuItem(title: "Keep Cache Warm", action: #selector(togglePin(_:)), keyEquivalent: "")
         toggle.target = self
         toggle.representedObject = a.sessionId
-        toggle.state = pins.isPinned(a.sessionId) ? .on : .off
+        toggle.state = pinMap[a.sessionId] != nil ? .on : .off
         sub.addItem(toggle)
-        if let note = pinNotes[a.sessionId] { sub.addItem(disabled(note)) }
+        if let note = pinNotes[a.sessionId] { sub.addItem(disabledItem(note)) }
         if a.fromConductor {
             sub.addItem(.separator())
             let open = NSMenuItem(title: "Open in Conductor", action: #selector(openConductor), keyEquivalent: "")
@@ -573,7 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func togglePin(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
+        guard !demo, let id = sender.representedObject as? String else { return }
         pins.toggle(id)
         if let a = agents.sessions.first(where: { $0.sessionId == id && $0.pid > 0 }) { pins.capture(a) }
         pinNotes[id] = nil
@@ -633,27 +625,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pinNotes[a.sessionId] = "Ping failed \(clock.string(from: sentAt)): \(e)"
         }
         rebuildMenu()
-    }
-
-    func paceItem(_ f: PaceForecast, resetsAt: Date?, font: NSFont) -> NSMenuItem {
-        let clock = DateFormatter()
-        clock.timeStyle = .short
-        let (text, tint): (String, NSColor) = {
-            switch f {
-            case .measuring:
-                return ("measuring pace…", .tertiaryLabelColor)
-            case .full(let at):
-                let reset = resetsAt.map { ", resets \(clock.string(from: $0))" } ?? ""
-                return ("full by \(clock.string(from: at))\(reset)", .systemRed)
-            case .onPace(let pct):
-                return ("on pace — ~\(Int(pct.rounded()))% at reset", .secondaryLabelColor)
-            }
-        }()
-        let mi = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        mi.attributedTitle = NSAttributedString(string: "\(pad("", 12)) \u{21B3} \(text)", attributes: [
-            .font: font, .foregroundColor: tint,
-        ])
-        return mi
     }
 
     @objc func openConductor() {
@@ -801,6 +772,11 @@ if let i = CommandLine.arguments.firstIndex(of: "--ping") {
     case .failure(let e):
         print("ping failed: \(e)"); exit(1)
     }
+}
+
+if let i = CommandLine.arguments.firstIndex(of: "--render-bar"), i + 1 < CommandLine.arguments.count {
+    renderBarPreview(to: CommandLine.arguments[i + 1])
+    exit(0)
 }
 
 if CommandLine.arguments.contains("--dump") {

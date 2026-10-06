@@ -88,6 +88,44 @@ because it forces the entire menu bar to re-measure — 2.93% CPU at just 2 fps,
 6.62% at 8 fps. Handing a layer to the compositor instead costs **0.37%** at
 60 fps, indistinguishable from idle.
 
+The Claude Code theme's `✢ ✳ ✶ ✻ ✽` spinner uses the same model: the frames
+are rendered to images once and swapped by a discrete `CAKeyframeAnimation`
+on `contents`, so nothing wakes per frame either.
+
+## Themes
+
+Each theme is a `MenuStyle` that turns the same `MenuContext` (usage, pace,
+sessions, pins, last error) into menu items and a menu bar title. Classic is
+the original code, moved without changes.
+
+- **Nothing drawn dimmed.** AppKit draws any item without an action as
+  disabled, which is why Classic's usage lines look washed out. The new themes
+  draw informational lines as item views (`GridPanelView`), which are drawn at
+  full strength and do not highlight on hover. Session rows stay native items,
+  so hover, keyboard navigation and submenus behave as before.
+- **A character grid.** Panels compose into a `Grid` of cells and paint it the
+  way a terminal does: box-drawing (`─ ━ │ ╭ ╮ ╰ ╯`) and block (`█ ▏…▉ ░`)
+  characters are drawn as geometry, and same-coloured runs are merged into one
+  pixel-aligned shape. Typed block characters leave seams on fractional pixel
+  boundaries; drawn ones meet edge to edge.
+- **Columns line up.** `◐ ↻ ⚠ ⎿` are not in SF Mono, and their fallback glyphs
+  are 0.2–3.7pt off the 7.42pt cell, which nudged every later column of a row.
+  `gridAligned` kerns each glyph back onto whole cells. Grid views start their
+  first cell at `menuTextInset` (16pt, AppKit's title inset measured on macOS
+  27), so the htop header sits exactly over the native rows' columns.
+- **No state column.** A checked item makes AppKit add a state column, which
+  shifts native titles right but not the views aligned to them, and
+  `showsStateColumn = false` does not prevent it. The new themes never check an
+  item; toggles say their state in the title (`login [on]`, `[x]`, `· on`).
+- **Spend past the cap.** The API reports extra usage as 100% once it reaches
+  its limit; the themes compute the share from the amounts (`113%`).
+
+Screenshots come from the real menu: `--demo --snapshot` pops the `NSMenu` up
+away from the cursor and captures that one window with `screencapture -l`, so
+nothing else on screen is in the image. The status item is drawn offscreen by
+`--render-bar`, because a full menu bar hides new status items behind the
+notch.
+
 ## Keep Cache Warm
 
 A pinned session gets a ping when 10 minutes are left on a 1h cache (2 minutes
@@ -125,8 +163,9 @@ ClaudeUsage --ping <pid>             # one real ping; exit 2 if it missed the ca
 
 ## Debugging
 
-macOS status items and their menus do not appear in `screencapture` output, so
-the binary has a headless mode that prints exactly what the menu would show:
+Without Screen Recording permission, status items and their menus do not
+appear in `screencapture` output, so the binary has a headless mode that prints
+exactly what the menu would show (with permission, see `--snapshot` above):
 
 ```bash
 ClaudeUsage --dump                 # what the menu bar shows
