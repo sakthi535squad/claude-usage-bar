@@ -6,19 +6,7 @@
 ⚑1  5h 13%  7d 79%  ⟳ 2 busy (+3)
 ```
 
-```
-5-hour       █·········  13%   resets 4h 2m
-             ↳ full by 3:40 PM, resets 4:10 PM
-7-day        ████████··  79%   resets 2d 6h
-Updated 2m ago · live
-NEEDS YOU
-◐ knowledge-graph-learning   waiting 3h 32m                  dialog open
-WORKING
-● Repo UI Improvement        busy 32m                  488k  ⚠ silent 14m
-KEPT WARM
-○ API refactor               idle 1h 5m    ↻ 97% 42m
-2 idle ▸
-```
+![The dropdown in the classic theme](docs/themes/classic.png)
 
 Native Swift, a single binary, no dependencies, no Xcode project. Idle CPU is
 indistinguishable from zero.
