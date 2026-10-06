@@ -307,8 +307,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !manual, let until = backoffUntil, until > Date() { return }
         // fetchLive shells out to `security` and blocks on it, so it must not run
         // on the main thread. The completion hops back to main itself.
-        DispatchQueue.global(qos: .utility).async {
-        fetchLive { [weak self] result in
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+        fetchLive { result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
