@@ -3,8 +3,8 @@ import Foundation
 /// Ping a pinned session once this little of its cache TTL remains. A tick can
 /// land ~75s late and a ping takes ~10s, so the lead has to cover both.
 func pingLead(ttl: TimeInterval) -> TimeInterval { ttl >= 3600 ? 10 * 60 : 2 * 60 }
-/// A forgotten pin would otherwise keep paying cache reads all night.
-let pinMaxAge: TimeInterval = 8 * 3600
+/// A forgotten pin would otherwise keep paying cache reads for days.
+let pinMaxAge: TimeInterval = 24 * 3600
 /// Near the 5-hour limit, real turns matter more than keeping idle ones warm.
 let keepWarmPauseAbovePct: Double = 90
 /// A ping must read back at least this share of the session's last context.
