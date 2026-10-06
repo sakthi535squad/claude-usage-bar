@@ -50,6 +50,13 @@ foreground agent finishes when a `tool_result` quotes its id. A background agent
 gets that `tool_result` immediately (marked `toolUseResult.isAsync`), so for
 those the finish is the later `<task-notification>` carrying `<tool-use-id>`.
 
+A session's transcript is `~/.claude/projects/<slug>/<sessionId>.jsonl`, where
+the slug is the cwd with every character other than an ASCII letter or digit
+replaced by `-` (`/tmp/my_app.v2` → `-tmp-my-app-v2`), cut at 200 characters
+plus a hash for long paths, as Claude Code 2.1.285 does it. If the file is not
+there, every project dir is searched for `<sessionId>.jsonl`, at most once a
+minute per session, and the result is cached.
+
 Transcripts are read incrementally — each pass reads only bytes appended since
 the last — on a background queue. The first pass over a 40 MB transcript takes
 about a second; after that it is a few KB a minute.

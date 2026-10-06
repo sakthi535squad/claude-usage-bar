@@ -217,4 +217,51 @@ check("exited pin uses captured launch",
       pingLaunch(ex!, pin: exitedPin, live: []).map { $0.exe }, "/bin/true")
 check("no captured launch, no ping", pingLaunch(ex!, pin: Pin(sessionId: "x", pinnedAt: now), live: []) == nil, true)
 
+// Transcript location
+check("slug: plain path", projectSlug("/Users/me/repo"), "-Users-me-repo")
+check("slug: underscore and dot", projectSlug("/private/tmp/cub_nogit.dir"), "-private-tmp-cub-nogit-dir")
+check("slug: space and hidden dir", projectSlug("/Users/me/my app/.context"), "-Users-me-my-app--context")
+check("slug: non-ASCII per UTF-16 unit", projectSlug("/tmp/caf\u{E9} \u{1F680}/x"), "-tmp-caf-----x")
+let at200 = "/" + String(repeating: "a", count: 199)
+check("slug: 200 units kept whole", projectSlug(at200), "-" + String(repeating: "a", count: 199))
+// Expected value from Claude Code 2.1.285's own UR() run under node.
+let longCwd = "/Users/" + String(repeating: "a", count: 60) + "/" + String(repeating: "b_", count: 60)
+    + "/my.app/project \u{E9} \u{1F680}"
+check("slug: long path truncated and hashed", projectSlug(longCwd),
+      "-Users-" + String(repeating: "a", count: 60) + "-" + String(repeating: "b-", count: 60)
+      + "-my-app-proj-v2cbnd")
+
+let projects = NSTemporaryDirectory() + "cub-projects-\(getpid())"
+let fm = FileManager.default
+func touch(_ dir: String, _ file: String) {
+    try? fm.createDirectory(atPath: projects + "/" + dir, withIntermediateDirectories: true)
+    fm.createFile(atPath: projects + "/" + dir + "/" + file, contents: Data())
+}
+try? fm.removeItem(atPath: projects)
+touch("-Users-me-my-app", "s1.jsonl")
+touch("-Users-me-other", "unrelated.jsonl")
+touch("custom-name", "s2.jsonl")
+let locator = TranscriptLocator(projectsDir: projects, rescanAfter: 60)
+let t0 = Date()
+check("locator: slug dir", locator.path(sessionId: "s1", cwd: "/Users/me/my_app", now: t0),
+      projects + "/-Users-me-my-app/s1.jsonl")
+check("locator: falls back to any project dir",
+      locator.path(sessionId: "s2", cwd: "/Users/me/elsewhere", now: t0), projects + "/custom-name/s2.jsonl")
+check("locator: no transcript yet", locator.path(sessionId: "s3", cwd: "/Users/me/new", now: t0), nil)
+touch("renamed", "s3.jsonl")
+check("locator: no rescan inside back-off",
+      locator.path(sessionId: "s3", cwd: "/Users/me/new", now: t0.addingTimeInterval(30)), nil)
+check("locator: rescans after back-off",
+      locator.path(sessionId: "s3", cwd: "/Users/me/new", now: t0.addingTimeInterval(61)), projects + "/renamed/s3.jsonl")
+check("locator: no transcript for a fresh session", locator.path(sessionId: "s4", cwd: "/Users/me/fresh", now: t0), nil)
+touch("-Users-me-fresh", "s4.jsonl")
+check("locator: slug dir checked even inside back-off",
+      locator.path(sessionId: "s4", cwd: "/Users/me/fresh", now: t0.addingTimeInterval(1)),
+      projects + "/-Users-me-fresh/s4.jsonl")
+try? fm.removeItem(atPath: projects + "/custom-name")
+touch("moved", "s2.jsonl")
+check("locator: stale cached path re-resolved",
+      locator.path(sessionId: "s2", cwd: "/Users/me/elsewhere", now: t0.addingTimeInterval(1)), projects + "/moved/s2.jsonl")
+try? fm.removeItem(atPath: projects)
+
 exit(failed ? 1 : 0)

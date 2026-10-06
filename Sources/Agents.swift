@@ -88,11 +88,66 @@ func readAgentSessions() -> [AgentSession] {
     return out
 }
 
-/// Transcripts live under a slug of the cwd with every "/" replaced by "-".
-func transcriptPath(for session: AgentSession) -> String? {
-    guard !session.cwd.isEmpty, !session.sessionId.isEmpty else { return nil }
-    let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
-    return "\(NSHomeDirectory())/.claude/projects/\(slug)/\(session.sessionId).jsonl"
+/// Claude Code's directory name for a cwd under ~/.claude/projects (`UR` in its bundle, 2.1.285).
+/// It works on UTF-16 code units, so a non-ASCII letter becomes one `-` and an emoji two; past 200
+/// units it truncates and appends a base-36 Java-style hash of the raw cwd.
+func projectSlug(_ cwd: String) -> String {
+    let maxLength = 200
+    let units = cwd.utf16.map { u -> Character in
+        switch u {
+        case 0x30...0x39, 0x41...0x5A, 0x61...0x7A: return Character(Unicode.Scalar(UInt8(u)))
+        default: return "-"
+        }
+    }
+    guard units.count > maxLength else { return String(units) }
+    var hash: Int32 = 0
+    for u in cwd.utf16 { hash = (hash &<< 5) &- hash &+ Int32(u) }
+    return String(units.prefix(maxLength)) + "-" + String(abs(Int64(hash)), radix: 36)
+}
+
+/// Finds each session's transcript. The slug covers almost every session; the scan of every project
+/// dir catches the rest (`CLAUDE_CODE_PROJECT_DIR_NAME`, a changed slug rule) and is rate-limited per
+/// session because a brand-new session has no transcript until its first turn.
+final class TranscriptLocator {
+    private let projectsDir: String
+    private let rescanAfter: TimeInterval
+    private var found: [String: String] = [:]
+    private var missedAt: [String: Date] = [:]
+
+    init(projectsDir: String = NSHomeDirectory() + "/.claude/projects", rescanAfter: TimeInterval = 60) {
+        self.projectsDir = projectsDir
+        self.rescanAfter = rescanAfter
+    }
+
+    func path(sessionId: String, cwd: String, now: Date = Date()) -> String? {
+        guard !sessionId.isEmpty else { return nil }
+        let fm = FileManager.default
+        let file = sessionId + ".jsonl"
+        if let hit = found[sessionId], fm.fileExists(atPath: hit) { return hit }
+        found[sessionId] = nil
+        if !cwd.isEmpty {
+            let direct = "\(projectsDir)/\(projectSlug(cwd))/\(file)"
+            if fm.fileExists(atPath: direct) { return remember(sessionId, direct) }
+        }
+        if let missed = missedAt[sessionId], now.timeIntervalSince(missed) < rescanAfter { return nil }
+        let dirs = (try? fm.contentsOfDirectory(atPath: projectsDir)) ?? []
+        if let dir = dirs.first(where: { fm.fileExists(atPath: "\(projectsDir)/\($0)/\(file)") }) {
+            return remember(sessionId, "\(projectsDir)/\(dir)/\(file)")
+        }
+        missedAt[sessionId] = now
+        return nil
+    }
+
+    func retain(only sessionIds: Set<String>) {
+        found = found.filter { sessionIds.contains($0.key) }
+        missedAt = missedAt.filter { sessionIds.contains($0.key) }
+    }
+
+    private func remember(_ sessionId: String, _ path: String) -> String {
+        found[sessionId] = path
+        missedAt[sessionId] = nil
+        return path
+    }
 }
 
 /// A parent blocked on a foreground subagent writes nothing itself, so the
@@ -140,6 +195,7 @@ func formatDuration(_ secs: TimeInterval) -> String {
 /// lookups. Not thread-safe; drive it from one serial queue.
 final class SessionScanner {
     private let reader = TranscriptReader()
+    private let locator = TranscriptLocator()
     private var branches: [String: (branch: String?, at: Date)] = [:]
 
     /// `pinned` sessions whose process has exited are kept in the snapshot with
@@ -155,7 +211,8 @@ final class SessionScanner {
         let titles = conductorTitles()
         var watched = Set<String>()
         for i in sessions.indices {
-            if let path = transcriptPath(for: sessions[i]), let state = reader.update(path: path) {
+            if let path = locator.path(sessionId: sessions[i].sessionId, cwd: sessions[i].cwd),
+               let state = reader.update(path: path) {
                 watched.insert(path)
                 sessions[i].subagents = state.pendingAgents.count
                 sessions[i].contextTokens = state.contextTokens
@@ -176,6 +233,7 @@ final class SessionScanner {
             }
         }
         reader.retain(only: watched)
+        locator.retain(only: Set(sessions.map(\.sessionId)))
         return AgentSnapshot(sessions: sessions.sorted { $0.label < $1.label })
     }
 
