@@ -51,10 +51,10 @@ reads the same data, so switching never changes what is polled or pinged.
 
 | Theme | Look |
 |---|---|
-| **Claude Code** (default) | A terracotta welcome box holding the limits, `●` section bullets, `⎿` result lines, actions as `/refresh` and `/usage`, and Claude Code's `✢ ✳ ✶ ✻ ✽` spinner. |
+| **Claude Code** | A terracotta welcome box holding the limits, `●` section bullets, `⎿` result lines, actions as `/refresh` and `/usage`, and Claude Code's `✢ ✳ ✶ ✻ ✽` spinner. |
 | **htop** | A dark terminal panel with htop meters and a summary line, then sessions as a process table: `R` running, `W` waiting, `S` sleeping, `Z` exited but kept warm. |
 | **Terminal** | A `❯ claude usage` prompt line, two-tone bars with eighth-cell resolution, and `── section · n ───` rules. |
-| **Classic** | The original text layout. |
+| **Classic** (default) | The original text layout. |
 
 Why they look the way they do: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md#themes).
 Design discussion: [#8](https://github.com/sakthi535squad/claude-usage-bar/issues/8).

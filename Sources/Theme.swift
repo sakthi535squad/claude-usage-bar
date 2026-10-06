@@ -26,7 +26,7 @@ enum Theme: String, CaseIterable {
     /// `-theme htop` on the command line overrides this for one run, via the
     /// argument domain of UserDefaults.
     static var current: Theme {
-        get { UserDefaults.standard.string(forKey: "theme").flatMap(Theme.init) ?? .claude }
+        get { UserDefaults.standard.string(forKey: "theme").flatMap(Theme.init) ?? .classic }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "theme") }
     }
 }

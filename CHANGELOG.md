@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- **Themes.** A **Theme ▸** picker with Claude Code (the new default), htop and
-  Terminal looks alongside Classic. Informational lines are no longer drawn
+- **Themes.** A **Theme ▸** picker with Claude Code, htop and Terminal looks
+  alongside Classic, which stays the default. Informational lines are no longer drawn
   dimmed, columns stay aligned past fallback glyphs, bars move in eighth-cell
   steps without seams, and extra usage shows its real share past the cap
   (`113%`, `$25 over cap`). [#8](https://github.com/sakthi535squad/claude-usage-bar/issues/8)
