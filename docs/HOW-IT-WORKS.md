@@ -68,8 +68,8 @@ derived name.
   question), longest wait first, with `waitingFor` alongside. The menu bar gains
   a `⚑N` prefix, and a notification fires once a wait passes a minute. Clicking
   the notification brings Conductor forward.
-- **Working.** How long each busy turn has run. Context size is grey below
-  200k, then orange, and red from 500k: auto-compact fires near the full window, so a
+- **Working.** How long each busy turn has run. Context size appears only from
+  200k (orange) and 500k (red): auto-compact fires near the full window, so a
   session can sit at several hundred k for hours. `⚠ silent` flags a busy
   session whose transcript and subagent transcripts have not been written for
   10 minutes.

@@ -31,7 +31,7 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
   including claude.ai and other machines.
 - **Needs you.** Sessions waiting on a permission dialog or question jump to the
   top, badge the menu bar with `⚑N`, and notify you after a minute.
-- **Working sessions.** Turn duration, context size (orange past 200k), and
+- **Working sessions.** Turn duration, context size once it passes 200k, and
   `⚠ silent` when a busy session has written nothing for 10 minutes — usually a
   hung tool or MCP call.
 - **Agent counts.** Top-level sessions and background subagents (`2 busy (+3)`),

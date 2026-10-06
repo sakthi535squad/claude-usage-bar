@@ -1,6 +1,6 @@
 import Foundation
 
-/// Context size colour thresholds. Auto-compact only fires near the full window, so a
+/// Size badge thresholds. Auto-compact only fires near the full window, so a
 /// session can sit at several hundred k for hours; this is the cue to steer it.
 let contextWarnTokens = 200_000
 let contextAlertTokens = 500_000
