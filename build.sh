@@ -6,7 +6,9 @@ cd "$(dirname "$0")"
 APP="build/ClaudeUsage.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS"
 
-swiftc -O -framework Cocoa -lsqlite3 -o "$APP/Contents/MacOS/ClaudeUsage" Sources/*.swift
+# swiftc otherwise targets the SDK version, so a Command Line Tools SDK newer than
+# the running macOS builds an app that refuses to launch. Keep in step with LSMinimumSystemVersion.
+swiftc -O -target "$(uname -m)-apple-macos13.0" -framework Cocoa -lsqlite3 -o "$APP/Contents/MacOS/ClaudeUsage" Sources/*.swift
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
