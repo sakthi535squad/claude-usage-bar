@@ -168,7 +168,7 @@ let pinPath = "/tmp/agent-fixture-pins.json"
 try? FileManager.default.removeItem(atPath: pinPath)
 let store = PinStore(path: pinPath)
 store.toggle("a", now: now)
-store.toggle("b", now: now.addingTimeInterval(-9 * 3600))
+store.toggle("b", now: now.addingTimeInterval(-(pinMaxAge + 3600)))
 store.recordPing("a", at: now)
 check("pins persist", PinStore(path: pinPath).pins.keys.sorted(), ["a", "b"])
 check("ping time persists", PinStore(path: pinPath).pins["a"]?.lastPingAt.map { Int($0.timeIntervalSince1970) },
