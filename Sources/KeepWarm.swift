@@ -3,7 +3,8 @@ import Foundation
 /// Ping a pinned session once this little of its cache TTL remains. A tick can
 /// land ~75s late and a ping takes ~10s, so the lead has to cover both.
 func pingLead(ttl: TimeInterval) -> TimeInterval { ttl >= 3600 ? 10 * 60 : 2 * 60 }
-/// A forgotten pin would otherwise keep paying cache reads for days.
+/// A forgotten pin would otherwise keep paying cache reads for days. Counted
+/// from the last real turn, so a session still in use keeps its pin.
 let pinMaxAge: TimeInterval = 24 * 3600
 /// Near the 5-hour limit, real turns matter more than keeping idle ones warm.
 let keepWarmPauseAbovePct: Double = 90
@@ -22,6 +23,9 @@ struct Pin: Codable, Equatable {
     /// When the last successful ping was sent. Pings are not persisted to the
     /// transcript, so this is the only record that the cache was refreshed.
     var lastPingAt: Date?
+    /// Last real turn seen in the transcript. Pings never move it, or a pin
+    /// would keep itself alive forever.
+    var lastActiveAt: Date?
     /// Conductor stops idle chat processes, but the cache lives server-side and
     /// Conductor resumes with the same flags. So the launch is captured while the
     /// process is alive and pinging carries on from it after the process exits.
@@ -98,14 +102,22 @@ final class PinStore {
         save()
     }
 
+    func recordActivity(_ id: String, at: Date?) {
+        guard let at, let pin = pins[id], at > (pin.lastActiveAt ?? .distantPast) else { return }
+        pins[id]?.lastActiveAt = at
+        save()
+    }
+
     func remove(_ id: String) {
         guard pins.removeValue(forKey: id) != nil else { return }
         save()
     }
 
-    /// Drops pins that have outlived `pinMaxAge`.
+    /// Drops pins with no real turn or pinning in the last `pinMaxAge`.
     func prune(now: Date = Date()) {
-        let kept = pins.filter { now.timeIntervalSince($0.value.pinnedAt) < pinMaxAge }
+        let kept = pins.filter { _, pin in
+            now.timeIntervalSince(max(pin.pinnedAt, pin.lastActiveAt ?? .distantPast)) < pinMaxAge
+        }
         guard kept.count != pins.count else { return }
         pins = kept
         save()
