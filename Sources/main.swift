@@ -584,6 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Pings every pinned, idle session whose cache is about to lapse. Runs on
     /// the 60s scan tick; the ping itself is a forked, unpersisted `claude -p`.
     func keepWarm(_ snapshot: AgentSnapshot) {
+        for a in snapshot.sessions { pins.recordActivity(a.sessionId, at: a.lastRequestAt) }
         pins.prune()
         let live = snapshot.sessions.filter { $0.pid > 0 }
         for a in live where pins.isPinned(a.sessionId) { pins.capture(a) }

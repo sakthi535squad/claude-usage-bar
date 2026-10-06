@@ -113,7 +113,8 @@ Guards:
 - **A ping that misses gets unpinned.** If it reads less than 90% of the
   session's last context from cache, it warmed a different prefix, and repeating
   it would pay write prices every time.
-- **Pins expire** after 24 hours or when the session ends.
+- **Pins expire** after 24 hours without a real turn in the session (pings
+  don't count) or when the session ends.
 - **Pings pause** while the 5-hour window is at 90% or more.
 - Every ping is logged to `~/.config/claude-usage-bar/keepwarm.log`, with its
   token counts and list-price cost. Pins are stored in `pins.json` next to it.

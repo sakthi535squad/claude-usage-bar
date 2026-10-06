@@ -70,8 +70,8 @@ Keychain item — choose **Always Allow**. Enable **Open at Login** from the men
 - **Everything else is local file reads** of `~/.claude` (and Conductor's
   database, read-only) and costs nothing against your rate limit.
 - **Keep Cache Warm spends tokens.** Each ping is a one-turn `claude -p` call at
-  cache-read prices. Pins expire after 24 hours, pause when the 5-hour window
-  reaches 90%, and every ping is logged with its cost to
+  cache-read prices. Pins expire after 24 hours of inactivity, pause when the
+  5-hour window reaches 90%, and every ping is logged with its cost to
   `~/.config/claude-usage-bar/keepwarm.log`.
 
 ## Command line

@@ -182,6 +182,29 @@ store.toggle("c", now: now)
 store.toggle("c", now: now)
 check("toggle twice unpins", PinStore(path: pinPath).pins.isEmpty, true)
 
+let old = now.addingTimeInterval(-(pinMaxAge + 3600))
+store.toggle("busy", now: old)
+store.toggle("stale", now: old)
+store.toggle("quiet", now: old)
+store.recordActivity("busy", at: now.addingTimeInterval(-600))
+store.recordActivity("busy", at: now.addingTimeInterval(-7200))
+store.recordActivity("stale", at: old.addingTimeInterval(1800))
+store.recordPing("quiet", at: now)
+check("activity persists and only moves forward",
+      PinStore(path: pinPath).pins["busy"]?.lastActiveAt.map { Int($0.timeIntervalSince1970) },
+      Int(now.addingTimeInterval(-600).timeIntervalSince1970))
+check("a ping is not activity", store.pins["quiet"]?.lastActiveAt, nil)
+store.prune(now: now)
+check("recent activity keeps an old pin", store.isPinned("busy"), true)
+check("activity older than pinMaxAge expires", store.isPinned("stale"), false)
+check("no activity falls back to pinnedAt", store.isPinned("quiet"), false)
+store.remove("busy")
+
+let legacyPath = "/tmp/agent-fixture-pins-legacy.json"
+try? Data(#"[{"sessionId":"l","pinnedAt":"2026-01-01T00:00:00Z"}]"#.utf8).write(to: URL(fileURLWithPath: legacyPath))
+check("pins.json without lastActiveAt still decodes", PinStore(path: legacyPath).pins["l"]?.lastActiveAt == nil
+      && PinStore(path: legacyPath).pins["l"] != nil, true)
+
 // Ping command
 let conductorArgs = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json",
                      "--thinking", "adaptive", "--effort", "medium", "--max-turns", "1000",
