@@ -231,10 +231,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// deepens it, so scheduled refreshes are skipped until this passes.
     var backoffUntil: Date?
     let pins = PinStore()
+    let spend = SpendLedger()
     /// Sessions with a ping in flight, so a slow one is not launched twice.
     var pinging = Set<String>()
     /// Last keep-warm outcome per session, shown in its submenu.
     var pinNotes: [String: String] = [:]
+    /// Keep All Sessions Warm: pin every session active within this many seconds. Zero is off.
+    var keepAllWindow: TimeInterval {
+        get { UserDefaults.standard.double(forKey: "keepAllWindow") }
+        set { UserDefaults.standard.set(newValue, forKey: "keepAllWindow") }
+    }
+    /// Sessions unpinned by hand or by a missed ping, so Keep All Sessions Warm
+    /// does not pin them straight back.
+    var keepAllSkip: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "keepAllSkip") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "keepAllSkip") }
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
@@ -466,8 +478,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for a in agents.busy { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
         }
         let warm = agents.idle.filter { pins.isPinned($0.sessionId) }
-        if !warm.isEmpty {
-            menu.addItem(disabled("KEPT WARM"))
+        let today = spend.total(days: 1, now: now)
+        if !warm.isEmpty || today.pings > 0 {
+            menu.addItem(disabled(today.pings > 0 ? "KEPT WARM · today \(formatCost(today.cost))" : "KEPT WARM"))
             for a in warm { menu.addItem(sessionItem(a, font: rowFont, now: now)) }
         }
         let idle = agents.idle.filter { !pins.isPinned($0.sessionId) }
@@ -491,6 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
+        menu.addItem(keepAllItem())
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         for mi in menu.items where mi.action != nil && mi.action != #selector(NSApplication.terminate(_:)) {
@@ -572,8 +586,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mi
     }
 
+    func keepAllItem() -> NSMenuItem {
+        let mi = NSMenuItem(title: "Keep All Sessions Warm", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.addItem(disabled("Pin sessions with a turn in the last"))
+        for w in keepAllWindows {
+            let opt = NSMenuItem(title: w == 0 ? "Off" : "\(Int(w / 3600)) hours",
+                                 action: #selector(setKeepAll(_:)), keyEquivalent: "")
+            opt.target = self
+            opt.representedObject = w
+            opt.state = keepAllWindow == w ? .on : .off
+            sub.addItem(opt)
+        }
+        sub.addItem(.separator())
+        sub.addItem(disabled("Keep-warm spend at list price"))
+        for (label, n) in [("Today", 1), ("7 days", 7), ("30 days", 30)] {
+            sub.addItem(disabled("\(label): \(spendSummary(spend.total(days: n)))"))
+        }
+        mi.submenu = sub
+        return mi
+    }
+
+    @objc func setKeepAll(_ sender: NSMenuItem) {
+        guard let w = sender.representedObject as? TimeInterval else { return }
+        keepAllWindow = w
+        if w == 0 {
+            pins.removeAuto()
+            keepAllSkip = []
+        }
+        keepWarm(agents)
+        rebuildMenu()
+    }
+
     @objc func togglePin(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        if pins.isPinned(id) { keepAllSkip.insert(id) } else { keepAllSkip.remove(id) }
         pins.toggle(id)
         if let a = agents.sessions.first(where: { $0.sessionId == id && $0.pid > 0 }) { pins.capture(a) }
         pinNotes[id] = nil
@@ -585,8 +632,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the 60s scan tick; the ping itself is a forked, unpersisted `claude -p`.
     func keepWarm(_ snapshot: AgentSnapshot) {
         for a in snapshot.sessions { pins.recordActivity(a.sessionId, at: a.lastRequestAt) }
-        pins.prune()
         let live = snapshot.sessions.filter { $0.pid > 0 }
+        let window = keepAllWindow
+        if window > 0 {
+            // Forget skips for sessions that have ended, so the list stays small.
+            let ids = Set(live.map(\.sessionId))
+            if !keepAllSkip.isSubset(of: ids) { keepAllSkip.formIntersection(ids) }
+            pins.autoPin(live, window: window, skip: keepAllSkip)
+        }
+        pins.prune(autoWindow: window > 0 ? window : pinMaxAge)
         for a in live where pins.isPinned(a.sessionId) { pins.capture(a) }
         if let five = usage?.windows.first(where: { $0.key == "five_hour" }),
            five.utilization >= keepWarmPauseAbovePct {
@@ -608,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let sentAt = Date()
                 let result = runPing(a, pin: pin, live: live)
-                logPing(a.label, sessionId: a.sessionId, result, at: sentAt)
+                logPing(a.label, sessionId: a.sessionId, model: a.model, result, at: sentAt)
                 DispatchQueue.main.async { self?.finishPing(a, result, sentAt: sentAt) }
             }
         }
@@ -620,15 +674,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clock.timeStyle = .short
         switch result {
         case .success(let r):
+            spend.record(r, model: a.model, at: sentAt)
+            let cost = pingCost(r, model: a.model).map { " · \(formatCost($0))" } ?? ""
             let context = a.contextTokens ?? 0
             if Double(r.cacheRead) < pingMinCacheRead * Double(context) {
                 // The ping warmed some other prefix; repeating it would only pay
                 // write prices again each time without helping the session.
                 pins.remove(a.sessionId)
-                pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache"
+                keepAllSkip.insert(a.sessionId)
+                pinNotes[a.sessionId] = "Unpinned: ping read \(formatTokens(r.cacheRead)) of \(formatTokens(context)) from cache\(cost)"
             } else {
                 pins.recordPing(a.sessionId, at: sentAt)
-                pinNotes[a.sessionId] = "Pinged \(clock.string(from: sentAt)) · \(formatTokens(r.cacheRead)) cached"
+                pinNotes[a.sessionId] = "Pinged \(clock.string(from: sentAt)) · \(formatTokens(r.cacheRead)) cached\(cost)"
             }
         case .failure(let e):
             pinNotes[a.sessionId] = "Ping failed \(clock.string(from: sentAt)): \(e)"
@@ -797,7 +854,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--ping") {
     let context = a.contextTokens ?? 0
     switch runPing(a, pin: nil, live: []) {
     case .success(let r):
-        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input)")
+        let cost = pingCost(r, model: a.model).map { ", cost \(formatCost($0))" } ?? ""
+        print("read \(r.cacheRead) of last context \(context), write \(r.cacheWrite), input \(r.input), output \(r.output)\(cost)")
         exit(Double(r.cacheRead) >= pingMinCacheRead * Double(context) ? 0 : 2)
     case .failure(let e):
         print("ping failed: \(e)"); exit(1)

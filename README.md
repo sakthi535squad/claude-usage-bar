@@ -41,6 +41,13 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
 - **Keep Cache Warm.** Pin a session and it is pinged shortly before the cache
   expires, so coming back to it costs cache-read prices, not a full rewrite.
   One avoided cold turn pays for about 20 pings.
+- **Keep All Sessions Warm.** Off, 8, 24 or 48 hours: every session with a real
+  turn in that window is pinned automatically, new sessions included, and
+  dropped once it has been idle that long.
+- **Keep-warm spend.** Every ping's tokens (cache read, cache write, input,
+  output) and list-price cost are recorded locally. Today's cost shows in the
+  *Kept warm* header, and today / 7 / 30-day totals in the Keep All Sessions
+  Warm submenu.
 
 Works with any Claude Code session. If you use [Conductor](https://conductor.build),
 sessions are labelled with their chat titles and get an **Open in Conductor** action.
@@ -71,8 +78,9 @@ Keychain item — choose **Always Allow**. Enable **Open at Login** from the men
   database, read-only) and costs nothing against your rate limit.
 - **Keep Cache Warm spends tokens.** Each ping is a one-turn `claude -p` call at
   cache-read prices. Pins expire after 24 hours of inactivity, pause when the
-  5-hour window reaches 90%, and every ping is logged with its cost to
-  `~/.config/claude-usage-bar/keepwarm.log`.
+  5-hour window reaches 90%, and every ping is logged with its tokens and
+  list-price cost to `~/.config/claude-usage-bar/keepwarm.log`, with daily
+  totals in `keepwarm-spend.json` next to it.
 
 ## Command line
 

@@ -6,6 +6,9 @@ func pingLead(ttl: TimeInterval) -> TimeInterval { ttl >= 3600 ? 10 * 60 : 2 * 6
 /// A forgotten pin would otherwise keep paying cache reads for days. Counted
 /// from the last real turn, so a session still in use keeps its pin.
 let pinMaxAge: TimeInterval = 24 * 3600
+/// Choices for "Keep All Sessions Warm": how long a session stays pinned after
+/// its last real turn. Zero is off.
+let keepAllWindows: [TimeInterval] = [0, 8 * 3600, 24 * 3600, 48 * 3600]
 /// Near the 5-hour limit, real turns matter more than keeping idle ones warm.
 let keepWarmPauseAbovePct: Double = 90
 /// A ping must read back at least this share of the session's last context.
@@ -34,6 +37,15 @@ struct Pin: Codable, Equatable {
     var exe: String?
     /// Without argv[0].
     var args: [String]?
+    /// Pinned by Keep All Sessions Warm rather than by hand.
+    var auto: Bool?
+}
+
+/// A session's last real turn. Pings run with --no-session-persistence, so they
+/// never reach the transcript and never count. A session with no turn yet is
+/// as fresh as its status.
+func lastActivity(_ a: AgentSession, now: Date) -> Date {
+    a.lastRequestAt ?? a.statusSince ?? now
 }
 
 struct CacheState {
@@ -96,6 +108,29 @@ final class PinStore {
         save()
     }
 
+    /// Pins every live session active within `window`, skipping ones the user
+    /// unpinned by hand. Manual pins are left as they are.
+    func autoPin(_ sessions: [AgentSession], window: TimeInterval, skip: Set<String>, now: Date = Date()) {
+        var changed = false
+        for a in sessions where a.pid > 0 && !a.sessionId.isEmpty && pins[a.sessionId] == nil
+            && !skip.contains(a.sessionId) {
+            let active = lastActivity(a, now: now)
+            guard now.timeIntervalSince(active) < window else { continue }
+            // Pinned as of its last turn, so the window counts from that turn
+            // rather than from when this setting first saw the session.
+            pins[a.sessionId] = Pin(sessionId: a.sessionId, pinnedAt: active, lastActiveAt: a.lastRequestAt, auto: true)
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    func removeAuto() {
+        let kept = pins.filter { $0.value.auto != true }
+        guard kept.count != pins.count else { return }
+        pins = kept
+        save()
+    }
+
     func recordPing(_ id: String, at: Date) {
         guard pins[id] != nil else { return }
         pins[id]?.lastPingAt = at
@@ -114,9 +149,12 @@ final class PinStore {
     }
 
     /// Drops pins with no real turn or pinning in the last `pinMaxAge`.
-    func prune(now: Date = Date()) {
+    /// Drops pins idle past their limit: `autoWindow` for auto pins, pinMaxAge
+    /// for manual ones.
+    func prune(now: Date = Date(), autoWindow: TimeInterval = pinMaxAge) {
         let kept = pins.filter { _, pin in
-            now.timeIntervalSince(max(pin.pinnedAt, pin.lastActiveAt ?? .distantPast)) < pinMaxAge
+            let limit = pin.auto == true ? autoWindow : pinMaxAge
+            return now.timeIntervalSince(max(pin.pinnedAt, pin.lastActiveAt ?? .distantPast)) < limit
         }
         guard kept.count != pins.count else { return }
         pins = kept
@@ -232,6 +270,10 @@ struct PingResult {
     let cacheRead: Int
     let cacheWrite: Int
     let input: Int
+    var output = 0
+    /// The part of `cacheWrite` written with a 1-hour TTL, priced at 2× input
+    /// rather than 1.25×.
+    var cacheWrite1h = 0
 }
 
 enum PingError: Error, CustomStringConvertible {
@@ -259,9 +301,12 @@ func parsePingOutput(_ data: Data) -> Result<PingResult, PingError> {
         return .failure(.failed("claude error: \((root["result"] as? String)?.prefix(200) ?? "unknown")"))
     }
     guard let u = root["usage"] as? [String: Any] else { return .failure(.failed("no usage in output")) }
+    let write1h = (u["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0
     return .success(PingResult(cacheRead: u["cache_read_input_tokens"] as? Int ?? 0,
                                cacheWrite: u["cache_creation_input_tokens"] as? Int ?? 0,
-                               input: u["input_tokens"] as? Int ?? 0))
+                               input: u["input_tokens"] as? Int ?? 0,
+                               output: u["output_tokens"] as? Int ?? 0,
+                               cacheWrite1h: write1h))
 }
 
 /// The live process's launch when it is running, else the one captured at pin
@@ -302,12 +347,13 @@ func runPing(_ a: AgentSession, pin: Pin?, live: [AgentSession]) -> Result<PingR
 }
 
 /// One line per ping, so what keep-warm spends can be audited afterwards.
-func logPing(_ label: String, sessionId: String, _ result: Result<PingResult, PingError>, at: Date) {
+func logPing(_ label: String, sessionId: String, model: String?, _ result: Result<PingResult, PingError>, at: Date) {
     let ts = ISO8601DateFormatter().string(from: at)
     let line: String
     switch result {
     case .success(let r):
-        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input)\n"
+        let cost = pingCost(r, model: model).map { " cost \(String(format: "%.4f", $0))" } ?? ""
+        line = "\(ts) \(sessionId.prefix(8)) \(label): read \(r.cacheRead) write \(r.cacheWrite) in \(r.input) out \(r.output)\(cost)\n"
     case .failure(let e):
         line = "\(ts) \(sessionId.prefix(8)) \(label): FAILED \(e)\n"
     }

@@ -200,6 +200,35 @@ check("activity older than pinMaxAge expires", store.isPinned("stale"), false)
 check("no activity falls back to pinnedAt", store.isPinned("quiet"), false)
 store.remove("busy")
 
+// Keep All Sessions Warm
+func live(_ id: String, requestAgo: TimeInterval?, since: TimeInterval = 60, pid: pid_t = 1) -> AgentSession {
+    var a = AgentSession(pid: pid, name: id, cwd: "", status: "idle", sessionId: id,
+                         statusSince: now.addingTimeInterval(-since), waitingFor: nil)
+    a.lastRequestAt = requestAgo.map { now.addingTimeInterval(-$0) }
+    return a
+}
+let autoPath = "/tmp/agent-fixture-pins-auto.json"
+try? FileManager.default.removeItem(atPath: autoPath)
+let auto = PinStore(path: autoPath)
+let day: TimeInterval = 24 * 3600
+auto.toggle("manual", now: now.addingTimeInterval(-3600))
+auto.autoPin([live("new", requestAgo: nil), live("recent", requestAgo: 20 * 3600),
+              live("old", requestAgo: 30 * 3600), live("gone", requestAgo: 60, pid: 0),
+              live("skipped", requestAgo: 60), live("manual", requestAgo: 60)],
+             window: day, skip: ["skipped"], now: now)
+check("auto-pins sessions active inside the window", auto.pins.keys.sorted(), ["manual", "new", "recent"])
+check("manual pin stays manual", auto.pins["manual"]?.auto, nil)
+check("auto flag persists", PinStore(path: autoPath).pins["new"]?.auto, true)
+auto.prune(now: now.addingTimeInterval(5 * 3600), autoWindow: day)
+check("auto pin expires a window after its last turn", auto.pins.keys.sorted(), ["manual", "new"])
+auto.autoPin([live("recent", requestAgo: 25 * 3600)], window: day, skip: [], now: now)
+check("expired session is not re-pinned without a new turn", auto.isPinned("recent"), false)
+auto.prune(now: now.addingTimeInterval(9 * 3600), autoWindow: 8 * 3600)
+check("auto pins follow the chosen window", auto.pins.keys.sorted(), ["manual"])
+auto.autoPin([live("a1", requestAgo: 60)], window: day, skip: [], now: now)
+auto.removeAuto()
+check("turning off drops only auto pins", auto.pins.keys.sorted(), ["manual"])
+
 let legacyPath = "/tmp/agent-fixture-pins-legacy.json"
 try? Data(#"[{"sessionId":"l","pinnedAt":"2026-01-01T00:00:00Z"}]"#.utf8).write(to: URL(fileURLWithPath: legacyPath))
 check("pins.json without lastActiveAt still decodes", PinStore(path: legacyPath).pins["l"]?.lastActiveAt == nil
@@ -226,6 +255,30 @@ let okOut = Data(#"{"type":"result","is_error":false,"result":"ok","total_cost_u
 if case .success(let r) = parsePingOutput(okOut) {
     check("ping output parsed", [r.cacheRead, r.cacheWrite, r.input], [63720, 1825, 2])
 } else { check("ping output parsed", false, true) }
+let fullOut = Data(#"{"is_error":false,"usage":{"input_tokens":2,"output_tokens":5,"cache_read_input_tokens":96160,"cache_creation_input_tokens":3000,"cache_creation":{"ephemeral_1h_input_tokens":3000,"ephemeral_5m_input_tokens":0}}}"#.utf8)
+if case .success(let r) = parsePingOutput(fullOut) {
+    check("ping output and 1h write parsed", [r.output, r.cacheWrite1h], [5, 3000])
+    // Opus 5.5: 96160 × $0.20 + 3000 × $8 (1h write) + 2 × $4 + 5 × $20, per MTok.
+    check("ping cost at list price", pingCost(r, model: "claude-opus-5-5").map { Int(($0 * 1_000_000).rounded()) },
+          96160 * 20 / 100 + 3000 * 8 + 2 * 4 + 5 * 20)
+    check("unknown model has no cost", pingCost(r, model: "gpt-x") == nil, true)
+    check("longest model prefix wins", price(for: "claude-opus-5-5")?.input, 4)
+    check("older opus 5 price", price(for: "claude-opus-5")?.input, 5)
+
+    let spendPath = "/tmp/agent-fixture-spend.json"
+    try? FileManager.default.removeItem(atPath: spendPath)
+    let ledger = SpendLedger(path: spendPath)
+    ledger.record(r, model: "claude-opus-5-5", at: now)
+    ledger.record(r, model: nil, at: now)
+    ledger.record(r, model: "claude-opus-5-5", at: now.addingTimeInterval(-3 * 86400))
+    ledger.record(r, model: "claude-opus-5-5", at: now.addingTimeInterval(-40 * 86400))
+    let reread = SpendLedger(path: spendPath)
+    check("today's pings and tokens", [reread.total(days: 1, now: now).pings, reread.total(days: 1, now: now).cacheRead],
+          [2, 2 * 96160])
+    check("unpriced pings counted apart", reread.total(days: 1, now: now).unpriced, 1)
+    check("7-day total", reread.total(days: 7, now: now).pings, 3)
+    check("days past keepDays are dropped", reread.days.count, 2)
+} else { check("ping output and 1h write parsed", false, true) }
 let errOut = Data(#"{"type":"result","is_error":true,"result":"No conversation found"}"#.utf8)
 if case .failure(.failed(let msg)) = parsePingOutput(errOut) {
     check("ping error surfaced", msg.contains("No conversation found"), true)

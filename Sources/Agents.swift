@@ -25,6 +25,7 @@ struct AgentSession {
     var cacheHit: Double?
     var lastRequestAt: Date?
     var cacheTTL: TimeInterval?
+    var model: String?
     /// Newest write to the session's transcript or any of its subagents'.
     var lastWriteAt: Date?
     /// Conductor chat title if there is one, else branch, else the derived name.
@@ -162,6 +163,7 @@ final class SessionScanner {
                 sessions[i].cacheHit = state.cacheHit
                 sessions[i].lastRequestAt = state.lastRequestAt
                 sessions[i].cacheTTL = state.cacheTTL
+                sessions[i].model = state.model
                 sessions[i].lastWriteAt = lastWrite(transcript: path)
             }
             if sessions[i].status == "exited" {

@@ -13,6 +13,7 @@ final class TranscriptState {
     /// Taken from the newest cache write. A request that wrote nothing keeps the
     /// previous value, since reads refresh an entry at its original TTL.
     fileprivate(set) var cacheTTL: TimeInterval?
+    fileprivate(set) var model: String?
 }
 
 private let timestampFormatter: ISO8601DateFormatter = {
@@ -122,6 +123,8 @@ final class TranscriptReader {
                     state.lastRequestAt = at
                 }
                 if let ttl = cacheTTL(from: usage) { state.cacheTTL = ttl }
+                // Claude Code writes "<synthetic>" for messages it made up itself.
+                if let m = message["model"] as? String, m.hasPrefix("claude-") { state.model = m }
             }
         }
     }
