@@ -21,6 +21,33 @@ docs: `README.md`. Internals and measurements: `docs/HOW-IT-WORKS.md`.
   file with testable logic must be added to that list; keep AppKit out of it.
 - The status item is invisible to `screencapture`. Check output headlessly:
   `ClaudeUsage --dump`, `--agents`, `--ping <pid> --dry-run`.
+- `build.sh` does not restart a running copy, which keeps the old binary.
+  Quit it and `open -a /Applications/ClaudeUsage.app`, then confirm with
+  `ps -o lstart= -p $(pgrep -f ClaudeUsage.app)`.
+
+## Git workflow
+
+- `main` is usually checked out in `~/Developer/claude-usage-bar`, and work
+  happens in other worktrees, so `git switch main` fails there. Branch from
+  `origin/main`, commit, then publish with `git push origin HEAD:main` (or open
+  a PR), and `git pull --ff-only` in the `main` checkout afterwards.
+- Check `git log origin/main..HEAD` before pushing. A worktree's branch may
+  already have been squash-merged, so start new work on a fresh branch.
+
+## Chat apps
+
+Session labels and **Open in …** come from other apps' sqlite databases,
+opened read-only (`Sources/Titles.swift`). Their schemas are not contracts:
+any failure must degrade to no titles.
+
+- **Conductor:** `~/Library/Application Support/com.conductor.app/conductor.db`,
+  `sessions.claude_session_id`.
+- **T3 Code:** `~/.t3/userdata/state.sqlite`, `projection_threads.title` joined
+  through `provider_session_runtime.resume_cursor_json` → `$.resume`. T3 runs
+  `claude` through the Agent SDK (`entrypoint: "sdk-ts"`), so its sessions are
+  in `~/.claude/sessions` like any other. Its argv carries `--mcp-config` with a
+  bearer token that changes when T3 restarts, so a keep-warm pin captured before
+  a restart is likely to miss and unpin itself (issue #26).
 
 ## Layout
 
