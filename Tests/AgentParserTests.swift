@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 let fixture = "/tmp/agent-fixture.jsonl"
 var failed = false
 func check<T: Equatable>(_ label: String, _ got: T, _ want: T) {
@@ -293,5 +294,22 @@ check("exited pin keeps its label", ex?.label, "Old chat")
 check("exited pin uses captured launch",
       pingLaunch(ex!, pin: exitedPin, live: []).map { $0.exe }, "/bin/true")
 check("no captured launch, no ping", pingLaunch(ex!, pin: Pin(sessionId: "x", pinnedAt: now), live: []) == nil, true)
+
+// T3 Code titles join a thread to the Claude session its resume cursor points at
+let t3db = "/tmp/cub-t3-state.sqlite"
+try? FileManager.default.removeItem(atPath: t3db)
+var tdb: OpaquePointer?
+sqlite3_open(t3db, &tdb)
+sqlite3_exec(tdb, """
+CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY, title TEXT NOT NULL, deleted_at TEXT);
+CREATE TABLE provider_session_runtime (thread_id TEXT PRIMARY KEY, provider_name TEXT NOT NULL, resume_cursor_json TEXT);
+INSERT INTO projection_threads VALUES ('t1', 'Fix the login flow', NULL), ('t2', 'Deleted chat', '2026-10-01'),
+  ('t3', 'Codex chat', NULL), ('t4', 'Not started', NULL);
+INSERT INTO provider_session_runtime VALUES ('t1', 'claudeAgent', '{"resume":"sid-1"}'),
+  ('t2', 'claudeAgent', '{"resume":"sid-2"}'), ('t3', 'codex', '{"resume":"sid-3"}'), ('t4', 'claudeAgent', NULL);
+""", nil, nil, nil)
+sqlite3_close(tdb)
+check("t3 title by resumed session", t3Titles(path: t3db), ["sid-1": "Fix the login flow"])
+check("missing t3 database", t3Titles(path: "/tmp/does-not-exist.sqlite"), [:])
 
 exit(failed ? 1 : 0)

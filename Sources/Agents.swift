@@ -28,9 +28,10 @@ struct AgentSession {
     var model: String?
     /// Newest write to the session's transcript or any of its subagents'.
     var lastWriteAt: Date?
-    /// Conductor chat title if there is one, else branch, else the derived name.
+    /// Chat title if there is one, else branch, else the derived name.
     var label: String = ""
-    var fromConductor = false
+    /// The app whose chat title labels this session.
+    var app: ChatApp?
 
     var isBusy: Bool { status == "busy" }
     var isWaiting: Bool { status == "waiting" }
@@ -153,7 +154,7 @@ final class SessionScanner {
             sessions.append(AgentSession(pid: 0, name: pin.label ?? pin.sessionId, cwd: cwd, status: "exited",
                                          sessionId: pin.sessionId, statusSince: nil, waitingFor: nil))
         }
-        let titles = conductorTitles()
+        let titles = chatTitles()
         var watched = Set<String>()
         for i in sessions.indices {
             if let path = transcriptPath(for: sessions[i]), let state = reader.update(path: path) {
@@ -168,9 +169,9 @@ final class SessionScanner {
             }
             if sessions[i].status == "exited" {
                 sessions[i].label = sessions[i].name
-            } else if let title = titles[sessions[i].sessionId] {
-                sessions[i].label = truncate(title, 34)
-                sessions[i].fromConductor = true
+            } else if let chat = titles[sessions[i].sessionId] {
+                sessions[i].label = truncate(chat.title, 34)
+                sessions[i].app = chat.app
             } else if let branch = branch(sessions[i].cwd) {
                 sessions[i].label = truncate(branch, 34)
             } else {

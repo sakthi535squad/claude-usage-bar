@@ -56,18 +56,23 @@ about a second; after that it is a few KB a minute.
 
 ### Labels
 
-Each session is labelled with its Conductor chat title ("Claude usage tracker
-Mac") rather than Claude Code's derived name ("worcester-a6"), joined on
-`claude_session_id` against Conductor's sqlite database, opened read-only.
-Sessions not started from Conductor fall back to their git branch, then to the
-derived name.
+Each session is labelled with its chat title ("Claude usage tracker Mac")
+rather than Claude Code's derived name ("worcester-a6"). Both apps' sqlite
+databases are opened read-only:
+
+- **Conductor:** joined on `sessions.claude_session_id` in `conductor.db`.
+- **T3 Code:** `projection_threads.title`, joined through
+  `provider_session_runtime`, whose `resume_cursor_json.resume` holds the Claude
+  session id the thread currently resumes, in `~/.t3/userdata/state.sqlite`.
+
+Other sessions fall back to their git branch, then to the derived name.
 
 ### Control panel rows
 
 - **Needs you.** Sessions whose `status` is `waiting` (a permission dialog or
   question), longest wait first, with `waitingFor` alongside. The menu bar gains
   a `⚑N` prefix, and a notification fires once a wait passes a minute. Clicking
-  the notification brings Conductor forward.
+  the notification brings the session's app (Conductor or T3 Code) forward.
 - **Working.** How long each busy turn has run. Context size appears only from
   200k (orange) and 500k (red): auto-compact fires near the full window, so a
   session can sit at several hundred k for hours. `⚠ silent` flags a busy

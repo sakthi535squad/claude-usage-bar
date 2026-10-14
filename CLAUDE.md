@@ -32,7 +32,7 @@ docs: `README.md`. Internals and measurements: `docs/HOW-IT-WORKS.md`.
 | `Sources/KeepWarm.swift` | `Pin`/`PinStore` (`pins.json`), ping arguments, running and parsing pings, `keepwarm.log` |
 | `Sources/Spend.swift` | List-price table, per-ping cost, `SpendLedger` (`keepwarm-spend.json`) |
 | `Sources/Pace.swift` | 5-hour pace forecast |
-| `Sources/Titles.swift` | Conductor chat titles (read-only sqlite) and git branch labels |
+| `Sources/Titles.swift` | Conductor and T3 Code chat titles (read-only sqlite) and git branch labels |
 | `Sources/Spinner.swift` | Core Animation spinner |
 
 State lives in `~/.config/claude-usage-bar/` (`pins.json`, `keepwarm.log`,

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **T3 Code chats** are labelled with their thread titles instead of Claude
+  Code's derived names, and get an **Open in T3 Code** action. Notifications
+  bring forward the app the waiting session belongs to.
 - **Keep All Sessions Warm.** Off, 8, 24 or 48 hours. Every session with a
   real turn in that window stays pinned, new sessions start pinned, and each is
   dropped after that long without a turn. Pings never count as activity.

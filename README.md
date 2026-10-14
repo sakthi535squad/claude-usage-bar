@@ -49,8 +49,9 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
   *Kept warm* header, and today / 7 / 30-day totals in the Keep All Sessions
   Warm submenu.
 
-Works with any Claude Code session. If you use [Conductor](https://conductor.build),
-sessions are labelled with their chat titles and get an **Open in Conductor** action.
+Works with any Claude Code session. If you use [Conductor](https://conductor.build)
+or [T3 Code](https://github.com/pingdotgg/t3code), sessions are labelled with their
+chat titles and get an **Open in Conductor** or **Open in T3 Code** action.
 
 ## Install
 
@@ -75,7 +76,7 @@ Keychain item — choose **Always Allow**. Enable **Open at Login** from the men
 - **Your token stays in the Keychain.** It is read fresh on each poll and never
   stored or sent anywhere else.
 - **Everything else is local file reads** of `~/.claude` (and Conductor's
-  database, read-only) and costs nothing against your rate limit.
+  and T3 Code's databases, read-only) and costs nothing against your rate limit.
 - **Keep Cache Warm spends tokens.** Each ping is a one-turn `claude -p` call at
   cache-read prices. Pins expire after 24 hours of inactivity, pause when the
   5-hour window reaches 90%, and every ping is logged with its tokens and

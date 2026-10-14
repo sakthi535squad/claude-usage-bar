@@ -558,6 +558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             content.title = "\(a.label) needs you"
             content.body = "Waiting \(formatDuration(now.timeIntervalSince(since)))"
                 + (a.waitingFor.map { " — \($0)" } ?? "")
+            if let app = a.app { content.userInfo = ["app": app.rawValue] }
             UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: key, content: content, trigger: nil))
         }
@@ -576,10 +577,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.state = pins.isPinned(a.sessionId) ? .on : .off
         sub.addItem(toggle)
         if let note = pinNotes[a.sessionId] { sub.addItem(disabled(note)) }
-        if a.fromConductor {
+        if let app = a.app {
             sub.addItem(.separator())
-            let open = NSMenuItem(title: "Open in Conductor", action: #selector(openConductor), keyEquivalent: "")
+            let open = NSMenuItem(title: "Open in \(app.rawValue)", action: #selector(openChatApp(_:)), keyEquivalent: "")
             open.target = self
+            open.representedObject = app.rawValue
             sub.addItem(open)
         }
         mi.submenu = sub
@@ -714,10 +716,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mi
     }
 
-    @objc func openConductor() {
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.conductor.app").first {
+    @objc func openChatApp(_ sender: NSMenuItem) {
+        if let app = (sender.representedObject as? String).flatMap(ChatApp.init(rawValue:)) { open(app) }
+    }
+
+    func open(_ chat: ChatApp) {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: chat.bundleId).first {
             app.activate()
-        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.conductor.app") {
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: chat.bundleId) {
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
         }
     }
@@ -803,7 +809,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
-        openConductor()
+        let app = (response.notification.request.content.userInfo["app"] as? String).flatMap(ChatApp.init(rawValue:))
+        open(app ?? .conductor)
         done()
     }
 }
