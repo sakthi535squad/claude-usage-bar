@@ -248,6 +248,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(Array(newValue), forKey: "keepAllSkip") }
     }
 
+    let caffeinate = Caffeinate()
+    /// Last read of `pmset disablesleep`, refreshed at launch, on wake and after
+    /// toggling, so building the menu never spawns pmset.
+    var lidSleepOff = false
+
     func applicationDidFinishLaunching(_ note: Notification) {
         // Without this, a cmd-dragged position is forgotten on every relaunch.
         item.autosaveName = "ClaudeUsageStatusItem"
@@ -256,6 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshAgents()
         rebuildMenu()
         refresh()
+        caffeinate.onExit = { [weak self] in self?.rebuildMenu() }
+        readSleepDisabled()
 
         activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated], reason: "poll Claude Code usage")
@@ -264,7 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // readout stays frozen at whatever it was when the lid closed.
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
-            object: nil, queue: .main) { [weak self] _ in self?.refresh(manual: true) }
+            object: nil, queue: .main) { [weak self] _ in
+                self?.refresh(manual: true)
+                self?.readSleepDisabled()
+            }
 
         let t = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -506,6 +516,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(login)
         menu.addItem(keepAllItem())
         menu.addItem(.separator())
+        let awake = NSMenuItem(title: "Keep Mac Awake (caffeinate)", action: #selector(toggleCaffeinate), keyEquivalent: "")
+        awake.state = caffeinate.isRunning ? .on : .off
+        menu.addItem(awake)
+        let lid = NSMenuItem(title: "Stay Awake with Lid Closed (pmset)", action: #selector(toggleSleepDisabled), keyEquivalent: "")
+        lid.state = lidSleepOff ? .on : .off
+        lid.toolTip = "Runs sudo pmset -a disablesleep. Stays on after Quit until turned off here."
+        menu.addItem(lid)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         for mi in menu.items where mi.action != nil && mi.action != #selector(NSApplication.terminate(_:)) {
             mi.target = self
@@ -730,6 +748,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openUsage() {
         NSWorkspace.shared.open(URL(string: "https://claude.ai/settings/usage")!)
+    }
+
+    @objc func toggleCaffeinate() {
+        if caffeinate.isRunning {
+            caffeinate.stop()
+        } else {
+            do { try caffeinate.start() } catch { lastError = "caffeinate failed: \(error.localizedDescription)" }
+        }
+        rebuildMenu()
+    }
+
+    func readSleepDisabled() {
+        DispatchQueue.global(qos: .utility).async {
+            let on = sleepDisabled()
+            DispatchQueue.main.async {
+                guard self.lidSleepOff != on else { return }
+                self.lidSleepOff = on
+                self.rebuildMenu()
+            }
+        }
+    }
+
+    @objc func toggleSleepDisabled() {
+        let on = !lidSleepOff
+        DispatchQueue.global(qos: .userInitiated).async {
+            let err = setSleepDisabled(on)
+            DispatchQueue.main.async {
+                // An empty message is the user cancelling the password prompt.
+                if let err, !err.isEmpty { self.lastError = "pmset failed: \(err)" }
+                self.readSleepDisabled()
+            }
+        }
     }
 
     @objc func toggleLogin() {

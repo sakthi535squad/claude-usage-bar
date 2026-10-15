@@ -48,6 +48,10 @@ Full history: [CHANGELOG.md](CHANGELOG.md).
   output) and list-price cost are recorded locally. Today's cost shows in the
   *Kept warm* header, and today / 7 / 30-day totals in the Keep All Sessions
   Warm submenu.
+- **Keep Mac Awake.** Runs `caffeinate` so idle sleep doesn't stop keep-warm
+  pings; it ends when you turn it off or quit. **Stay Awake with Lid Closed**
+  runs `pmset -a disablesleep 1` (asks for an admin password) and stays on
+  after quitting until you turn it off.
 
 Works with any Claude Code session. If you use [Conductor](https://conductor.build)
 or [T3 Code](https://github.com/pingdotgg/t3code), sessions are labelled with their

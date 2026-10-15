@@ -60,6 +60,7 @@ any failure must degrade to no titles.
 | `Sources/Spend.swift` | List-price table, per-ping cost, `SpendLedger` (`keepwarm-spend.json`) |
 | `Sources/Pace.swift` | 5-hour pace forecast |
 | `Sources/Titles.swift` | Conductor and T3 Code chat titles (read-only sqlite) and git branch labels |
+| `Sources/Awake.swift` | `caffeinate` child process and `pmset disablesleep` read/toggle |
 | `Sources/Spinner.swift` | Core Animation spinner |
 
 State lives in `~/.config/claude-usage-bar/` (`pins.json`, `keepwarm.log`,

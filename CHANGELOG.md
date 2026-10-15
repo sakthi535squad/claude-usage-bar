@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Keep Mac Awake (caffeinate)** and **Stay Awake with Lid Closed (pmset)**
+  menu toggles. The caffeinate child dies with the app; `pmset disablesleep`
+  needs an admin password and persists until turned off.
 - **T3 Code chats** are labelled with their thread titles instead of Claude
   Code's derived names, and get an **Open in T3 Code** action. Notifications
   bring forward the app the waiting session belongs to.
